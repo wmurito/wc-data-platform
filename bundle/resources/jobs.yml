@@ -1,0 +1,84 @@
+# WorldCup Data Platform — Job Definitions (DAB)
+# Referência para workspace pago. Community Edition: execução manual.
+
+resources:
+  jobs:
+
+    01_streaming_ingest:
+      name: "WC · 01 · Streaming Ingest (DLT)"
+      description: "DLT pipeline contínuo: Kafka → Bronze (match_events + odds)"
+      tasks:
+        - task_key: dlt_bronze_pipeline
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.bronze_dlt.id}
+
+    02_static_batch_load:
+      name: "WC · 02 · Static Batch Load"
+      description: "Carga inicial de rankings FIFA, histórico, elencos"
+      tasks:
+        - task_key: load_static_seeds
+          notebook_task:
+            notebook_path: ../notebooks/bronze/02_bronze_statsbomb.py
+      schedule:
+        quartz_cron_expression: "0 0 0 * * MON"
+        timezone_id: "America/Sao_Paulo"
+
+    03_silver_transform:
+      name: "WC · 03 · Silver Transform"
+      description: "Bronze → Silver: dedup, normalize, enrich, MERGE upsert"
+      tasks:
+        - task_key: silver_match_timeline
+          notebook_task:
+            notebook_path: ../notebooks/silver/01_silver_match_timeline.py
+        - task_key: silver_player_stats
+          depends_on:
+            - task_key: silver_match_timeline
+          notebook_task:
+            notebook_path: ../notebooks/silver/02_silver_player_stats.py
+        - task_key: silver_team_performance
+          depends_on:
+            - task_key: silver_player_stats
+          notebook_task:
+            notebook_path: ../notebooks/silver/03_silver_team_performance.py
+
+    04_gold_aggregations:
+      name: "WC · 04 · Gold Aggregations"
+      description: "Silver → Gold: standings, artilharia, feature store"
+      tasks:
+        - task_key: gold_standings
+          notebook_task:
+            notebook_path: ../notebooks/gold/01_gold_standings.py
+        - task_key: gold_top_scorers
+          depends_on:
+            - task_key: gold_standings
+          notebook_task:
+            notebook_path: ../notebooks/gold/02_gold_top_scorers.py
+        - task_key: gold_match_features
+          depends_on:
+            - task_key: gold_standings
+          notebook_task:
+            notebook_path: ../notebooks/gold/03_gold_match_features.py
+
+    05_ml_training:
+      name: "WC · 05 · ML Training"
+      description: "Treina modelos xG + match predictor. Registra no MLflow."
+      tasks:
+        - task_key: train_xg_model
+          notebook_task:
+            notebook_path: ../notebooks/ml/01_xg_model.py
+        - task_key: train_match_predictor
+          depends_on:
+            - task_key: train_xg_model
+          notebook_task:
+            notebook_path: ../notebooks/ml/02_match_predictor.py
+
+    06_simulation:
+      name: "WC · 06 · Tournament Simulator"
+      description: "Monte Carlo 10k simulações. Escreve gold_simulation_results."
+      tasks:
+        - task_key: run_simulation
+          notebook_task:
+            notebook_path: ../notebooks/ml/03_tournament_simulator.py
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: "UTC"

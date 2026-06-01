@@ -1,0 +1,40 @@
+# WorldCup Data Platform — Databricks Asset Bundle
+# =====================================================
+# ATENÇÃO: Este bundle é para referência e execução futura
+# em workspace pago. Community Edition não suporta Jobs API.
+#
+# Deploy: databricks bundle deploy --target dev
+# Run:    databricks bundle run 01_streaming_ingest
+# =====================================================
+
+bundle:
+  name: wc-data-platform-2026
+
+variables:
+  catalog:
+    default: worldcup
+    description: Unity Catalog catalog name
+  env:
+    default: dev
+    description: Deployment environment
+
+workspace:
+  host: ${var.DATABRICKS_HOST}
+  # Autenticação via env var: DATABRICKS_TOKEN
+
+artifacts:
+  notebooks:
+    type: notebook
+    source_code_path: ../notebooks
+
+targets:
+  dev:
+    mode: development
+    default: true
+    variables:
+      catalog: worldcup_dev
+
+  prod:
+    mode: production
+    variables:
+      catalog: worldcup

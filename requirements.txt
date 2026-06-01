@@ -1,0 +1,24 @@
+# WorldCup Data Platform — Python dependencies
+# pip install -r requirements.txt
+
+# StatsBomb
+statsbombpy==1.18.0
+
+# FBref / soccerdata
+soccerdata==1.7.0
+
+# HTTP / scraping
+requests==2.31.0
+beautifulsoup4==4.12.3
+lxml==5.2.1
+
+# Data
+pandas==2.2.2
+numpy==1.26.4
+pyarrow==16.1.0
+
+# Utilities
+python-dotenv==1.0.1
+loguru==0.7.2
+tenacity==8.3.0
+tqdm==4.66.4
