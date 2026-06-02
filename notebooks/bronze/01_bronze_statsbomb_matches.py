@@ -150,7 +150,9 @@ for comp in COMPETITIONS:
     all_dfs.append(df)
 
 # COMMAND ----------
-matches_df = reduce(DataFrame.unionByName, all_dfs)
+matches_df = all_dfs[0]
+for next_df in all_dfs[1:]:
+    matches_df = matches_df.unionByName(next_df)
 print(f"\nTotal consolidado: {matches_df.count()} partidas")
 
 # COMMAND ----------
