@@ -21,7 +21,7 @@
 # MAGIC %md ## 0. Setup
 
 # COMMAND ----------
-CATALOG    = "worldcup"
+CATALOG    = "lakehouse"
 SCHEMA_B   = "bronze"
 SCHEMA_S   = "silver"
 TABLE      = "match_timeline"

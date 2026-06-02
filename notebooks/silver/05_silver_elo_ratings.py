@@ -25,7 +25,7 @@
 # MAGIC %md ## 0. Setup
 
 # COMMAND ----------
-CATALOG    = "worldcup"
+CATALOG    = "lakehouse"
 SCHEMA_S   = "silver"
 SCHEMA_B   = "bronze"
 TABLE      = "elo_ratings"

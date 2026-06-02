@@ -20,8 +20,8 @@
 # MAGIC %md ## 0. Setup
 
 # COMMAND ----------
-DBFS_BASE  = "dbfs:/FileStore/wc-platform/raw/statsbomb"
-CATALOG    = "worldcup"
+DBFS_BASE  = "/Volumes/lakehouse/wc_platform/files/raw/statsbomb"
+CATALOG    = "lakehouse"
 SCHEMA     = "bronze"
 TABLE      = "statsbomb_360"
 FULL_TABLE = f"{CATALOG}.{SCHEMA}.{TABLE}"

@@ -18,9 +18,9 @@
 # MAGIC %md ## 0. Setup
 
 # COMMAND ----------
-DBFS_HIST  = "dbfs:/FileStore/wc-platform/raw/historical"
-DBFS_SEEDS = "dbfs:/FileStore/wc-platform/seeds"
-CATALOG    = "worldcup"
+DBFS_HIST  = "/Volumes/lakehouse/wc_platform/files/raw/historical"
+DBFS_SEEDS = "/Volumes/lakehouse/wc_platform/files/seeds"
+CATALOG    = "lakehouse"
 SCHEMA     = "bronze"
 TABLE      = "historical_results"
 FULL_TABLE = f"{CATALOG}.{SCHEMA}.{TABLE}"

@@ -18,8 +18,8 @@
 # MAGIC %md ## 0. Setup
 
 # COMMAND ----------
-DBFS_FBREF = "dbfs:/FileStore/wc-platform/raw/fbref"
-CATALOG    = "worldcup"
+DBFS_FBREF = "/Volumes/lakehouse/wc_platform/files/raw/fbref"
+CATALOG    = "lakehouse"
 SCHEMA     = "bronze"
 TABLE      = "fbref_player_season"
 FULL_TABLE = f"{CATALOG}.{SCHEMA}.{TABLE}"
