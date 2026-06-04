@@ -6,9 +6,11 @@
 # MAGIC **Executar depois de:** upload dos JSONs para DBFS
 
 # COMMAND ----------
+
 # MAGIC %md ## 0. Setup
 
 # COMMAND ----------
+
 DBFS_BASE       = "/Volumes/lakehouse/wc_platform/files/raw/statsbomb"
 CATALOG         = "lakehouse"
 SCHEMA          = "bronze"
@@ -24,9 +26,11 @@ COMPETITIONS = [
 ]
 
 # COMMAND ----------
+
 # MAGIC %md ## 1. Catalog / Schema
 
 # COMMAND ----------
+
 # Fallback: se Unity Catalog não disponível, usar hive_metastore
 try:
     spark.sql(f"CREATE CATALOG IF NOT EXISTS {CATALOG}")
@@ -40,9 +44,11 @@ except Exception:
     print(f"⚠️  Fallback → {CATALOG}.{SCHEMA}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 2. Leitura e normalização dos matches
 
 # COMMAND ----------
+
 from pyspark.sql import functions as F, DataFrame
 from pyspark.sql.types import LongType, IntegerType, DateType
 from functools import reduce
@@ -150,15 +156,16 @@ for comp in COMPETITIONS:
     all_dfs.append(df)
 
 # COMMAND ----------
-matches_df = all_dfs[0]
-for next_df in all_dfs[1:]:
-    matches_df = matches_df.unionByName(next_df)
+
+matches_df = reduce(lambda df1, df2: df1.unionByName(df2), all_dfs)
 print(f"\nTotal consolidado: {matches_df.count()} partidas")
 
 # COMMAND ----------
+
 # MAGIC %md ## 3. Validação
 
 # COMMAND ----------
+
 print("Nulos em colunas críticas:")
 for col in ["match_id","home_team_id","away_team_id","home_score","away_score","match_date"]:
     n = matches_df.filter(F.col(col).isNull()).count()
@@ -168,9 +175,11 @@ print("\nPartidas por competição:")
 matches_df.groupBy("_competition_label").count().orderBy("count", ascending=False).show(truncate=False)
 
 # COMMAND ----------
+
 # MAGIC %md ## 4. Escrita Delta
 
 # COMMAND ----------
+
 (
     matches_df.write
     .format("delta")
@@ -183,9 +192,11 @@ print(f"✅ {FULL_TABLE} gravada com sucesso")
 spark.sql(f"DESCRIBE DETAIL {FULL_TABLE}").select("name","numFiles","sizeInBytes").show()
 
 # COMMAND ----------
+
 # MAGIC %md ## 5. Amostra
 
 # COMMAND ----------
+
 spark.table(FULL_TABLE).select(
     "match_id","match_date","_competition_label","stage_name",
     "home_team_name","home_score","away_score","away_team_name"

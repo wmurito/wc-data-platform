@@ -18,9 +18,11 @@
 # MAGIC - Chave `match_id + index` para MERGE idempotente
 
 # COMMAND ----------
+
 # MAGIC %md ## 0. Setup
 
 # COMMAND ----------
+
 CATALOG    = "lakehouse"
 SCHEMA_B   = "bronze"
 SCHEMA_S   = "silver"
@@ -37,9 +39,11 @@ except Exception:
     spark.sql(f"CREATE DATABASE IF NOT EXISTS {SCHEMA_S}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 1. Leitura da Bronze
 
 # COMMAND ----------
+
 from pyspark.sql import functions as F
 from pyspark.sql.types import DoubleType, IntegerType
 from delta.tables import DeltaTable
@@ -51,12 +55,14 @@ print(f"Eventos Bronze: {events.count():,}")
 print(f"Partidas Bronze: {matches.count():,}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 2. Filtrar tipos de evento relevantes
 # MAGIC
 # MAGIC Remover eventos de sistema/câmera que não têm valor analítico.
 # MAGIC Preservar todos os eventos com impacto tático/estatístico.
 
 # COMMAND ----------
+
 # Tipos a EXCLUIR (ruído operacional do StatsBomb)
 EXCLUDE_TYPES = {
     "Ball Receipt*",        # confirmação de recebimento (redundante com Pass)
@@ -85,9 +91,12 @@ print(f"Eventos após filtro: {events_filtered.count():,}")
 print(f"Eventos removidos: {events.count() - events_filtered.count():,}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 3. Enriquecimento com dados da partida
 
 # COMMAND ----------
+
+# DBTITLE 1,Cell 9
 # Selecionar apenas o que precisamos de matches
 matches_slim = matches.select(
     "match_id",
@@ -107,14 +116,21 @@ matches_slim = matches.select(
     "_competition_label",
 )
 
-events_enriched = events_filtered.join(
+# Drop ambiguous columns from events before join
+# (we want the match-level versions from matches_slim)
+events_enriched = events_filtered.drop(
+    "_competition_id", "_season_id", "_competition_label"
+).join(
     matches_slim, on="match_id", how="left"
 )
 
 # COMMAND ----------
+
 # MAGIC %md ## 4. Features derivadas por evento
 
 # COMMAND ----------
+
+# DBTITLE 1,Cell 11
 # Coordenadas do gol adversário (campo StatsBomb: 120x80)
 # Gol do adversário está em x=120, y=40
 GOAL_X = 120.0
@@ -134,7 +150,6 @@ timeline = events_enriched.select(
     F.col("duration"),
 
     # ── Tipo
-    F.col("type_id"),
     F.col("type_name"),
     F.col("play_pattern_name"),
 
@@ -251,12 +266,14 @@ timeline = events_enriched.select(
 )
 
 # COMMAND ----------
+
 # MAGIC %md ## 5. Placar acumulado por minuto (window function)
 # MAGIC
 # MAGIC Calcula o placar no momento de cada evento — não só o placar final.
 # MAGIC Fundamental para features de ML (estado do jogo quando o chute ocorreu).
 
 # COMMAND ----------
+
 from pyspark.sql.window import Window
 
 # Identificar gols
@@ -308,11 +325,13 @@ timeline_with_score = timeline.join(
 print(f"Timeline com placar acumulado: {timeline_with_score.count():,} eventos")
 
 # COMMAND ----------
+
 # MAGIC %md ## 6. MERGE upsert na Silver (idempotente)
 
 # COMMAND ----------
-if DeltaTable.isDeltaTable(spark, f"/{FULL_TABLE.replace('.','/')}") or \
-   spark.catalog.tableExists(FULL_TABLE):
+
+# DBTITLE 1,Cell 15
+if spark.catalog.tableExists(FULL_TABLE):
 
     dt = DeltaTable.forName(spark, FULL_TABLE)
     dt.alias("target").merge(
@@ -333,9 +352,11 @@ else:
     print(f"✅ Tabela criada: {FULL_TABLE}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 7. Validação
 
 # COMMAND ----------
+
 silver = spark.table(FULL_TABLE)
 total  = silver.count()
 print(f"Total eventos Silver: {total:,}")

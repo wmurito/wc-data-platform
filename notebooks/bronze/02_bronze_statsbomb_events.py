@@ -12,9 +12,11 @@
 # MAGIC A Silver vai explodir cada tipo em tabelas especializadas.
 
 # COMMAND ----------
+
 # MAGIC %md ## 0. Setup
 
 # COMMAND ----------
+
 DBFS_BASE  = "/Volumes/lakehouse/wc_platform/files/raw/statsbomb"
 CATALOG    = "lakehouse"
 SCHEMA     = "bronze"
@@ -30,9 +32,11 @@ COMPETITIONS = [
 ]
 
 # COMMAND ----------
+
 # MAGIC %md ## 1. Catalog / Schema
 
 # COMMAND ----------
+
 try:
     spark.sql(f"CREATE CATALOG IF NOT EXISTS {CATALOG}")
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
@@ -45,36 +49,27 @@ except Exception:
     print(f"⚠️  Fallback → hive_metastore.{SCHEMA}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 2. Leitura de eventos — competição por competição
 # MAGIC
 # MAGIC Estratégia: ler competition por competition para evitar OOM
 # MAGIC no Community Edition (single-node). Escrita incremental por partição.
 
 # COMMAND ----------
-from pyspark.sql.types import LongType, IntegerType, FloatType, BooleanType, StructType
 
-def path_exists(schema, path_str):
-    parts = path_str.split(".")
-    current = schema
-    for part in parts:
-        if isinstance(current, StructType):
-            names = [f.name for f in current.fields]
-            if part not in names:
-                return False
-            field = [f for f in current.fields if f.name == part][0]
-            current = field.dataType
-        else:
-            return False
-    return True
+# DBTITLE 1,Cell 7
+from pyspark.sql import functions as F
+from pyspark.sql.types import LongType, IntegerType, FloatType, BooleanType
 
-def safe_col(df, path_str, cast_type=None):
-    if path_exists(df.schema, path_str):
-        res = F.col(path_str)
+def safe_col(df, col_name, cast_type=None):
+    """Return F.col(col_name) if exists, else F.lit(None). Optionally cast."""
+    if col_name in df.columns:
+        result = F.col(col_name)
     else:
-        res = F.lit(None)
+        result = F.lit(None)
     if cast_type:
-        res = res.cast(cast_type)
-    return res
+        result = result.cast(cast_type)
+    return result
 
 def read_competition_events(comp: dict) -> None:
     """
@@ -102,43 +97,40 @@ def read_competition_events(comp: dict) -> None:
         .json(events_path)
     )
 
-    # Campos base com seleção segura contra campos ausentes
+    # Campos base presentes em TODOS os eventos
     df = raw.select(
         # Identificadores
-        safe_col(raw, "id").alias("event_id"),
-        safe_col(raw, "match_id", LongType()).alias("match_id"),
-        safe_col(raw, "index", IntegerType()).alias("index"),
+        F.col("id").alias("event_id"),
+        F.col("match_id").cast(LongType()),
+        F.col("index").cast(IntegerType()),
 
         # Tempo
-        safe_col(raw, "period", IntegerType()).alias("period"),
-        safe_col(raw, "timestamp").alias("timestamp"),
-        safe_col(raw, "minute", IntegerType()).alias("minute"),
-        safe_col(raw, "second", IntegerType()).alias("second"),
-        safe_col(raw, "duration", FloatType()).alias("duration"),
+        F.col("period").cast(IntegerType()),
+        F.col("timestamp"),
+        F.col("minute").cast(IntegerType()),
+        F.col("second").cast(IntegerType()),
+        F.col("duration").cast(FloatType()),
 
-        # Tipo de evento
-        safe_col(raw, "type.id", IntegerType()).alias("type_id"),
-        safe_col(raw, "type.name").alias("type_name"),
+        # Tipo de evento (já vem flat no JSON)
+        F.col("type").alias("type_name"),
 
         # Posse
-        safe_col(raw, "possession", IntegerType()).alias("possession"),
-        safe_col(raw, "possession_team.id", IntegerType()).alias("possession_team_id"),
-        safe_col(raw, "possession_team.name").alias("possession_team_name"),
+        F.col("possession").cast(IntegerType()),
+        F.col("possession_team_id").cast(IntegerType()),
+        F.col("possession_team").alias("possession_team_name"),
 
         # Padrão de jogo
-        safe_col(raw, "play_pattern.id", IntegerType()).alias("play_pattern_id"),
-        safe_col(raw, "play_pattern.name").alias("play_pattern_name"),
+        F.col("play_pattern").alias("play_pattern_name"),
 
         # Time e jogador
-        safe_col(raw, "team.id", IntegerType()).alias("team_id"),
-        safe_col(raw, "team.name").alias("team_name"),
-        safe_col(raw, "player.id", IntegerType()).alias("player_id"),
-        safe_col(raw, "player.name").alias("player_name"),
-        safe_col(raw, "position.id", IntegerType()).alias("position_id"),
-        safe_col(raw, "position.name").alias("position_name"),
+        F.col("team_id").cast(IntegerType()),
+        F.col("team").alias("team_name"),
+        F.col("player_id").cast(IntegerType()),
+        F.col("player").alias("player_name"),
+        F.col("position").alias("position_name"),
 
         # Localização no campo [x, y]
-        safe_col(raw, "location", "array<double>").alias("location"),
+        F.col("location").cast("array<double>"),
 
         # Flags
         safe_col(raw, "under_pressure", BooleanType()).alias("under_pressure"),
@@ -146,61 +138,61 @@ def read_competition_events(comp: dict) -> None:
         safe_col(raw, "out", BooleanType()).alias("out"),
         safe_col(raw, "counterpress", BooleanType()).alias("counterpress"),
 
-        # ── Structs específicos por tipo (preservados inteiros na Bronze)
+        # ── Campos específicos por tipo (já vêm flat no JSON)
         # Shot
-        safe_col(raw, "shot.statsbomb_xg", FloatType()).alias("shot_xg"),
-        safe_col(raw, "shot.outcome.name").alias("shot_outcome"),
-        safe_col(raw, "shot.technique.name").alias("shot_technique"),
-        safe_col(raw, "shot.body_part.name").alias("shot_body_part"),
-        safe_col(raw, "shot.type.name").alias("shot_type"),
-        safe_col(raw, "shot.first_time", BooleanType()).alias("shot_first_time"),
-        safe_col(raw, "shot.one_on_one", BooleanType()).alias("shot_one_on_one"),
-        safe_col(raw, "shot.end_location", "array<double>").alias("shot_end_location"),
+        safe_col(raw, "shot_statsbomb_xg", FloatType()).alias("shot_xg"),
+        safe_col(raw, "shot_outcome").alias("shot_outcome"),
+        safe_col(raw, "shot_technique").alias("shot_technique"),
+        safe_col(raw, "shot_body_part").alias("shot_body_part"),
+        safe_col(raw, "shot_type").alias("shot_type"),
+        safe_col(raw, "shot_first_time", BooleanType()).alias("shot_first_time"),
+        safe_col(raw, "shot_one_on_one", BooleanType()).alias("shot_one_on_one"),
+        safe_col(raw, "shot_end_location").cast("array<double>").alias("shot_end_location"),
 
         # Pass
-        safe_col(raw, "pass.length", FloatType()).alias("pass_length"),
-        safe_col(raw, "pass.angle", FloatType()).alias("pass_angle"),
-        safe_col(raw, "pass.height.name").alias("pass_height"),
-        safe_col(raw, "pass.recipient.id", IntegerType()).alias("pass_recipient_id"),
-        safe_col(raw, "pass.recipient.name").alias("pass_recipient_name"),
-        safe_col(raw, "pass.outcome.name").alias("pass_outcome"),
-        safe_col(raw, "pass.type.name").alias("pass_type"),
-        safe_col(raw, "pass.body_part.name").alias("pass_body_part"),
-        safe_col(raw, "pass.end_location", "array<double>").alias("pass_end_location"),
-        safe_col(raw, "pass.statsbomb_xg", FloatType()).alias("pass_xa"),
-        safe_col(raw, "pass.switch", BooleanType()).alias("pass_switch"),
-        safe_col(raw, "pass.cross", BooleanType()).alias("pass_cross"),
-        safe_col(raw, "pass.through_ball", BooleanType()).alias("pass_through_ball"),
-        safe_col(raw, "pass.goal_assist", BooleanType()).alias("pass_goal_assist"),
-        safe_col(raw, "pass.shot_assist", BooleanType()).alias("pass_shot_assist"),
+        safe_col(raw, "pass_length", FloatType()).alias("pass_length"),
+        safe_col(raw, "pass_angle", FloatType()).alias("pass_angle"),
+        safe_col(raw, "pass_height").alias("pass_height"),
+        safe_col(raw, "pass_recipient_id", IntegerType()).alias("pass_recipient_id"),
+        safe_col(raw, "pass_recipient").alias("pass_recipient_name"),
+        safe_col(raw, "pass_outcome").alias("pass_outcome"),
+        safe_col(raw, "pass_type").alias("pass_type"),
+        safe_col(raw, "pass_body_part").alias("pass_body_part"),
+        safe_col(raw, "pass_end_location").cast("array<double>").alias("pass_end_location"),
+        F.lit(None).cast(FloatType()).alias("pass_xa"),
+        safe_col(raw, "pass_switch", BooleanType()).alias("pass_switch"),
+        safe_col(raw, "pass_cross", BooleanType()).alias("pass_cross"),
+        safe_col(raw, "pass_through_ball", BooleanType()).alias("pass_through_ball"),
+        safe_col(raw, "pass_goal_assist", BooleanType()).alias("pass_goal_assist"),
+        safe_col(raw, "pass_shot_assist", BooleanType()).alias("pass_shot_assist"),
 
         # Carry
-        safe_col(raw, "carry.end_location", "array<double>").alias("carry_end_location"),
+        safe_col(raw, "carry_end_location").cast("array<double>").alias("carry_end_location"),
 
         # Duel
-        safe_col(raw, "duel.type.name").alias("duel_type"),
-        safe_col(raw, "duel.outcome.name").alias("duel_outcome"),
+        safe_col(raw, "duel_type").alias("duel_type"),
+        safe_col(raw, "duel_outcome").alias("duel_outcome"),
 
         # Goalkeeper
-        safe_col(raw, "goalkeeper.type.name").alias("goalkeeper_type"),
-        safe_col(raw, "goalkeeper.outcome.name").alias("goalkeeper_outcome"),
-        safe_col(raw, "goalkeeper.position.name").alias("goalkeeper_position"),
-        safe_col(raw, "goalkeeper.body_part.name").alias("goalkeeper_body_part"),
-        safe_col(raw, "goalkeeper.technique.name").alias("goalkeeper_technique"),
+        safe_col(raw, "goalkeeper_type").alias("goalkeeper_type"),
+        safe_col(raw, "goalkeeper_outcome").alias("goalkeeper_outcome"),
+        safe_col(raw, "goalkeeper_position").alias("goalkeeper_position"),
+        safe_col(raw, "goalkeeper_body_part").alias("goalkeeper_body_part"),
+        safe_col(raw, "goalkeeper_technique").alias("goalkeeper_technique"),
 
         # Foul
-        safe_col(raw, "foul_committed.card.name").alias("foul_card"),
-        safe_col(raw, "foul_committed.penalty", BooleanType()).alias("foul_penalty"),
+        safe_col(raw, "foul_committed_card").alias("foul_card"),
+        safe_col(raw, "foul_committed_penalty", BooleanType()).alias("foul_penalty"),
 
         # Interception
-        safe_col(raw, "interception.outcome.name").alias("interception_outcome"),
+        safe_col(raw, "interception_outcome").alias("interception_outcome"),
 
         # Clearance
-        safe_col(raw, "clearance.body_part.name").alias("clearance_body_part"),
-        safe_col(raw, "clearance.head", BooleanType()).alias("clearance_head"),
+        safe_col(raw, "clearance_body_part").alias("clearance_body_part"),
+        safe_col(raw, "clearance_head", BooleanType()).alias("clearance_head"),
 
         # Bad behaviour (cartões diretos)
-        safe_col(raw, "bad_behaviour.card.name").alias("bad_behaviour_card"),
+        safe_col(raw, "bad_behaviour_card").alias("bad_behaviour_card"),
 
         # Meta Bronze
         F.lit(comp["competition_id"]).cast(IntegerType()).alias("_competition_id"),
@@ -226,9 +218,11 @@ def read_competition_events(comp: dict) -> None:
 
 
 # COMMAND ----------
+
 # MAGIC %md ## 3. Executar por competição
 
 # COMMAND ----------
+
 # Limpar tabela antes de reingerir tudo (idempotência)
 spark.sql(f"DROP TABLE IF EXISTS {FULL_TABLE}")
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
@@ -237,9 +231,11 @@ for comp in COMPETITIONS:
     read_competition_events(comp)
 
 # COMMAND ----------
+
 # MAGIC %md ## 4. Validação
 
 # COMMAND ----------
+
 events = spark.table(FULL_TABLE)
 total  = events.count()
 print(f"Total de eventos: {total:,}")
@@ -264,9 +260,11 @@ events.filter(F.col("shot_xg").isNotNull()) \
     ).show()
 
 # COMMAND ----------
+
 # MAGIC %md ## 5. Amostra — top xG shots
 
 # COMMAND ----------
+
 events.filter(
     (F.col("type_name") == "Shot") &
     (F.col("shot_xg").isNotNull())

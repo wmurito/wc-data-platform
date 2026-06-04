@@ -18,9 +18,11 @@
 # MAGIC - Enriquecimento: stats FBref da temporada 2024-25 do clube (xG/90, npxG)
 
 # COMMAND ----------
+
 # MAGIC %md ## 0. Setup
 
 # COMMAND ----------
+
 CATALOG    = "lakehouse"
 SCHEMA_S   = "silver"
 SCHEMA_B   = "bronze"
@@ -37,9 +39,11 @@ except Exception:
     spark.sql(f"CREATE DATABASE IF NOT EXISTS {SCHEMA_S}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 1. Leitura das fontes
 
 # COMMAND ----------
+
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 from delta.tables import DeltaTable
@@ -54,6 +58,7 @@ print(f"Lineups:   {lineups.count():,} jogadores x partida")
 print(f"FBref:     {fbref.count():,} registros de shooting")
 
 # COMMAND ----------
+
 # MAGIC %md ## 2. Agregações por jogador x partida
 
 # COMMAND ----------
@@ -172,9 +177,12 @@ misc_agg = timeline.filter(F.col("type_name").isin("Interception","Foul Committe
     )
 
 # COMMAND ----------
+
 # MAGIC %md ## 3. Consolidar todas as agregações
 
 # COMMAND ----------
+
+# DBTITLE 1,Cell 9
 # Base: todos jogadores que apareceram na timeline (com ou sem shots)
 player_base = timeline.filter(
     F.col("player_id").isNotNull()
@@ -207,7 +215,7 @@ player_stats = player_base \
           on=["match_id","player_id","_competition_id"], how="left") \
     .join(minutes_played, on=[player_base["match_id"]==minutes_played["match_id"],
                                player_base["player_id"]==minutes_played["_pid"]], how="left") \
-    .drop("_pid") \
+    .drop("_pid", minutes_played["match_id"]) \
     .fillna(0, subset=[
         "shots_total","goals","shots_on_target","xg_total",
         "passes_total","passes_complete","xa_total","key_passes","assists",
@@ -218,9 +226,11 @@ player_stats = player_base \
     ])
 
 # COMMAND ----------
+
 # MAGIC %md ## 4. Enriquecimento com FBref (stats de clube 2024-25)
 
 # COMMAND ----------
+
 # Normalizar nome do jogador para join aproximado
 # FBref usa nomes sem acento às vezes — join por similaridade de nome
 fbref_slim = fbref.select(
@@ -244,9 +254,11 @@ player_stats_enriched = player_stats.join(
 print(f"Player stats consolidadas: {player_stats_enriched.count():,} linhas")
 
 # COMMAND ----------
+
 # MAGIC %md ## 5. Adicionar posição do jogador (via lineups)
 
 # COMMAND ----------
+
 lineups_slim = lineups.select(
     "match_id",
     "player_id",
@@ -260,9 +272,11 @@ player_stats_final = player_stats_enriched.join(
 ).withColumn("_processed_at", F.current_timestamp())
 
 # COMMAND ----------
+
 # MAGIC %md ## 6. MERGE upsert
 
 # COMMAND ----------
+
 if spark.catalog.tableExists(FULL_TABLE):
     dt = DeltaTable.forName(spark, FULL_TABLE)
     dt.alias("t").merge(
@@ -281,9 +295,11 @@ else:
     print(f"✅ Tabela criada: {FULL_TABLE}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 7. Validação — Top artilheiros e criadores
 
 # COMMAND ----------
+
 ps = spark.table(FULL_TABLE)
 print(f"Total registros: {ps.count():,}")
 

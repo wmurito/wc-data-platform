@@ -18,9 +18,11 @@
 # MAGIC Esta é a tabela que alimenta o modelo de xG da Fase ML.
 
 # COMMAND ----------
+
 # MAGIC %md ## 0. Setup
 
 # COMMAND ----------
+
 CATALOG    = "lakehouse"
 SCHEMA_S   = "silver"
 SCHEMA_B   = "bronze"
@@ -37,6 +39,7 @@ except Exception:
     spark.sql(f"CREATE DATABASE IF NOT EXISTS {SCHEMA_S}")
 
 # COMMAND ----------
+
 from pyspark.sql import functions as F
 from pyspark.sql.types import DoubleType, IntegerType
 from delta.tables import DeltaTable
@@ -45,9 +48,11 @@ timeline = spark.table(f"{CATALOG}.{SCHEMA_S}.match_timeline")
 frames   = spark.table(f"{CATALOG}.{SCHEMA_B}.statsbomb_360")
 
 # COMMAND ----------
+
 # MAGIC %md ## 1. Filtrar só chutes da timeline
 
 # COMMAND ----------
+
 shots = timeline.filter(
     (F.col("type_name") == "Shot") &
     F.col("shot_xg").isNotNull()
@@ -69,12 +74,14 @@ shots = timeline.filter(
 print(f"Chutes totais: {shots.count():,}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 2. Agregar contexto 360° por chute
 # MAGIC
 # MAGIC Para cada chute, calcular métricas a partir do freeze frame.
 # MAGIC Só disponível para WC 2022, Euro 2024 e Euro 2020.
 
 # COMMAND ----------
+
 import math
 
 # Constantes do campo StatsBomb
@@ -143,9 +150,11 @@ total_visible = frames.groupBy("event_id","match_id") \
     .agg(F.count("*").alias("total_players_visible"))
 
 # COMMAND ----------
+
 # MAGIC %md ## 3. Consolidar shot map
 
 # COMMAND ----------
+
 shot_map = shots \
     .join(min_def_dist,    on=["event_id","match_id"], how="left") \
     .join(gk_dist,         on=["event_id","match_id"], how="left") \
@@ -166,9 +175,11 @@ print(f"  Com dados 360°: {shot_map.filter(F.col('has_360_data')).count():,}")
 print(f"  Sem dados 360°: {shot_map.filter(~F.col('has_360_data')).count():,}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 4. MERGE upsert
 
 # COMMAND ----------
+
 if spark.catalog.tableExists(FULL_TABLE):
     dt = DeltaTable.forName(spark, FULL_TABLE)
     dt.alias("t").merge(
@@ -184,9 +195,12 @@ else:
     print(f"✅ Criada: {FULL_TABLE}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 5. Análises exploratórias
 
 # COMMAND ----------
+
+# DBTITLE 1,Cell 14
 sm = spark.table(FULL_TABLE)
 print(f"Total chutes: {sm.count():,}")
 
@@ -194,7 +208,7 @@ print("\n📐 Distribuição de xG por zona do campo:")
 sm.groupBy("pitch_zone") \
     .agg(
         F.count("*").alias("chutes"),
-        F.sum("is_goal".cast(IntegerType())).alias("gols"),
+        F.sum(F.col("is_goal").cast(IntegerType())).alias("gols"),
         F.avg("shot_xg").alias("xg_medio"),
         F.sum("shot_xg").alias("xg_total"),
     ) \
