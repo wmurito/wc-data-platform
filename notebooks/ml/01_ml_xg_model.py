@@ -26,10 +26,13 @@
 # MAGIC **Métrica:** ROC-AUC, Brier Score, Log Loss
 
 # COMMAND ----------
+
 # MAGIC %md ## 0. Setup
 
 # COMMAND ----------
-CATALOG     = "worldcup"
+
+# DBTITLE 1,Cell 3
+CATALOG     = "lakehouse"
 SCHEMA_S    = "silver"
 SCHEMA_G    = "gold"
 TABLE_IN    = f"{CATALOG}.{SCHEMA_S}.shot_map"
@@ -44,11 +47,16 @@ except Exception:
     TABLE_IN = f"{CATALOG}.{SCHEMA_S}.shot_map"
 
 # COMMAND ----------
+
 # MAGIC %md ## 1. Carregar dados de chutes
 
 # COMMAND ----------
+
+# DBTITLE 1,Cell 5
 from pyspark.sql import functions as F
 
+# Override TABLE_IN with correct catalog
+TABLE_IN = "lakehouse.silver.shot_map"
 shots_raw = spark.table(TABLE_IN)
 print(f"Total chutes: {shots_raw.count():,}")
 print(f"  Com dados 360°: {shots_raw.filter(F.col('has_360_data')).count():,}")
@@ -56,9 +64,11 @@ print(f"  Gols: {shots_raw.filter(F.col('is_goal')).count():,}")
 print(f"  Taxa de conversão: {shots_raw.filter(F.col('is_goal')).count() / shots_raw.count() * 100:.2f}%")
 
 # COMMAND ----------
+
 # MAGIC %md ## 2. Feature engineering e preparação
 
 # COMMAND ----------
+
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
@@ -98,9 +108,11 @@ print(f"Shape: {shots_pd.shape}")
 shots_pd.head(3)
 
 # COMMAND ----------
+
 # MAGIC %md ## 3. Pré-processamento
 
 # COMMAND ----------
+
 df = shots_pd.copy()
 
 # ── Encoding de variáveis categóricas
@@ -149,9 +161,11 @@ print(f"Amostras: {len(y)} | Gols: {y.sum()} ({y.mean()*100:.1f}%)")
 print(f"Features base: {len(BASE_FEATURES)} | Features full (com 360°): {len(FULL_FEATURES)}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 4. Split treino/teste estratificado por competição
 
 # COMMAND ----------
+
 # Split: WC 2018 + Euro 2020 + Copa América = treino | WC 2022 + Euro 2024 = teste
 # (garante que testamos em dados "futuros" em relação ao treino)
 mask_test = df["_competition_label"].isin([
@@ -168,13 +182,20 @@ print(f"Treino: {len(y_train):,} chutes | {y_train.sum()} gols ({y_train.mean()*
 print(f"Teste:  {len(y_test):,} chutes | {y_test.sum()} gols ({y_test.mean()*100:.1f}%)")
 
 # COMMAND ----------
+
 # MAGIC %md ## 5. Treino — Logistic Regression (baseline)
 
 # COMMAND ----------
+
+# DBTITLE 1,Cell 13
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 
-mlflow.set_experiment(EXPERIMENT)
+# Configure MLflow to use Databricks model registry
+mlflow.set_registry_uri("databricks-uc")
+# Experiment name must be an absolute workspace path
+experiment_path = f"/Users/{spark.sql('SELECT current_user()').collect()[0][0]}/worldcup_xg_model"
+mlflow.set_experiment(experiment_path)
 
 with mlflow.start_run(run_name="logistic_regression_base") as run_lr:
 
@@ -224,9 +245,16 @@ with mlflow.start_run(run_name="logistic_regression_base") as run_lr:
 print(f"  MLflow run_id: {lr_run_id}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 6. Treino — XGBoost (modelo principal)
 
 # COMMAND ----------
+
+# MAGIC %pip install xgboost
+
+# COMMAND ----------
+
+# DBTITLE 1,Cell 16
 try:
     from xgboost import XGBClassifier
     HAS_XGB = True
@@ -269,7 +297,7 @@ if HAS_XGB:
         print(f"  Log Loss:    {logloss_xgb:.4f}")
 
         # Feature importances
-        importances = dict(zip(FULL_FEATURES, xgb_model.feature_importances_))
+        importances = dict(zip(FULL_FEATURES, xgb_model.feature_importances_.tolist()))
         print("\n  Feature Importances (Top 10):")
         for feat, imp in sorted(importances.items(), key=lambda x: x[1], reverse=True)[:10]:
             print(f"    {feat:35s}: {imp:.4f}")
@@ -295,33 +323,57 @@ if HAS_XGB:
     print(f"  MLflow run_id: {xgb_run_id}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 7. Registrar o melhor modelo no MLflow Model Registry
 
 # COMMAND ----------
+
+# DBTITLE 1,Cell 18
 best_run_id = xgb_run_id if HAS_XGB and auc_xgb > auc_lr else lr_run_id
 best_model  = "XGBoost" if HAS_XGB and auc_xgb > auc_lr else "LogisticRegression"
 
 print(f"\n🏆 Melhor modelo: {best_model}")
 print(f"   run_id: {best_run_id}")
 
-model_uri = f"runs:/{best_run_id}/model"
-result = mlflow.register_model(model_uri, MODEL_NAME)
+# Re-log the best model with signature
+from mlflow.models import infer_signature
 
-client = mlflow.tracking.MlflowClient()
-client.transition_model_version_stage(
-    name=MODEL_NAME,
-    version=result.version,
-    stage="Production",
-    archive_existing_versions=True,
-)
-print(f"✅ Modelo '{MODEL_NAME}' v{result.version} → Production")
+if best_model == "XGBoost":
+    best_model_obj = xgb_model
+    X_sample = X_test_full[:5]
+    predictions = best_model_obj.predict_proba(X_sample)[:, 1]
+else:
+    best_model_obj = pipeline_lr
+    X_sample = X_test_base[:5]
+    predictions = best_model_obj.predict_proba(X_sample)[:, 1]
+
+signature = infer_signature(X_sample, predictions)
+
+with mlflow.start_run(run_id=best_run_id):
+    model_info = mlflow.sklearn.log_model(
+        best_model_obj,
+        "model_with_signature",
+        signature=signature,
+        input_example=X_sample,
+    )
+
+print(f"✅ Modelo logged com signature e input_example")
+print(f"   Model URI: {model_info.model_uri}")
+print(f"\n⚠️  Registro no Unity Catalog requer permissões adicionais.")
+print(f"   Para registrar manualmente, use a UI do MLflow ou:")
+print(f"   mlflow.register_model('{model_info.model_uri}', '{MODEL_NAME}')")
 
 # COMMAND ----------
+
 # MAGIC %md ## 8. Gerar predições xG para todos os chutes e salvar na Gold
 
 # COMMAND ----------
-# Carregar modelo de produção
-loaded_model = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/Production")
+
+# DBTITLE 1,Cell 20
+# Carregar modelo do run (já que não foi registrado no UC devido a permissões)
+model_uri = f"runs:/{best_run_id}/model_with_signature"
+loaded_model = mlflow.sklearn.load_model(model_uri)
+print(f"✅ Modelo carregado de: {model_uri}")
 
 # Predição em todo o dataset
 X_all = df[FULL_FEATURES if HAS_XGB else BASE_FEATURES].values
@@ -340,7 +392,7 @@ xg_predictions = spark.createDataFrame(
         "shot_xg","our_xg","distance_to_goal","angle_to_goal",
         "shot_body_part","shot_technique","shot_type"]].assign(
         xg_diff = (df["our_xg"] - df["shot_xg"]).round(4),
-        _model_version = result.version,
+        _model_run_id = best_run_id,
         _model_name = MODEL_NAME,
     )
 )
@@ -350,12 +402,15 @@ xg_predictions.write \
     .mode("overwrite") \
     .option("overwriteSchema","true") \
     .saveAsTable(f"{CATALOG}.gold.xg_predictions")
-print(f"✅ worldcup.gold.xg_predictions: {xg_predictions.count():,} chutes")
+print(f"✅ {CATALOG}.gold.xg_predictions: {xg_predictions.count():,} chutes")
 
 # COMMAND ----------
+
 # MAGIC %md ## 9. Análise de resultados
 
 # COMMAND ----------
+
+# DBTITLE 1,Cell 22
 xg_df = spark.table(f"{CATALOG}.gold.xg_predictions")
 
 print("📊 xG médio por tipo de chute (nosso modelo vs StatsBomb):")
@@ -364,7 +419,7 @@ xg_df.groupBy("shot_type") \
         F.count("*").alias("chutes"),
         F.round(F.avg("shot_xg"), 4).alias("statsbomb_xg"),
         F.round(F.avg("our_xg"), 4).alias("our_xg"),
-        F.round(F.avg("is_goal".cast("int")), 4).alias("taxa_real"),
+        F.round(F.avg(F.col("is_goal").cast("int")), 4).alias("taxa_real"),
     ).orderBy("statsbomb_xg", ascending=False) \
     .show(truncate=False)
 

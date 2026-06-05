@@ -24,10 +24,13 @@
 # MAGIC   #5 ppda_diff (~8%)
 
 # COMMAND ----------
+
 # MAGIC %md ## 0. Setup
 
 # COMMAND ----------
-CATALOG     = "worldcup"
+
+# DBTITLE 1,Cell 3
+CATALOG     = "lakehouse"
 SCHEMA_G    = "gold"
 TABLE_IN    = f"{CATALOG}.{SCHEMA_G}.match_features"
 EXPERIMENT  = "worldcup/match_predictor"
@@ -41,9 +44,11 @@ except Exception:
     TABLE_IN = f"{CATALOG}.{SCHEMA_G}.match_features"
 
 # COMMAND ----------
+
 # MAGIC %md ## 1. Carregar feature store
 
 # COMMAND ----------
+
 import pandas as pd
 import numpy as np
 import mlflow
@@ -63,9 +68,11 @@ print(f"\nDistribuição de resultados:")
 print(mf["result_home"].value_counts().rename({1:"Home Win", 0:"Draw", -1:"Away Win"}))
 
 # COMMAND ----------
+
 # MAGIC %md ## 2. Seleção e preparação de features
 
 # COMMAND ----------
+
 FEATURE_COLS = [
     # ── ELO (mais importantes)
     "elo_diff",
@@ -137,12 +144,14 @@ print(f"\nShape final: X={X.shape}, y={y.shape}")
 print(f"Classes: {np.unique(y, return_counts=True)}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 3. Validação Leave-One-Tournament-Out
 # MAGIC
 # MAGIC Treina em N-1 torneios, testa no torneio deixado de fora.
 # MAGIC Mais realista que random split para dados temporais.
 
 # COMMAND ----------
+
 from sklearn.metrics import accuracy_score, f1_score
 from collections import defaultdict
 
@@ -192,10 +201,23 @@ print(f"\nMédia LOTO accuracy: {loto_df['accuracy'].mean():.4f}")
 print(f"Média baseline (prever home win sempre): {loto_df['baseline_home_win'].mean():.4f}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 4. Treino final — modelo completo (todos os torneios)
 
 # COMMAND ----------
-mlflow.set_experiment(EXPERIMENT)
+
+# DBTITLE 1,Instalar pacotes ML
+# MAGIC %pip install xgboost lightgbm --quiet
+# MAGIC dbutils.library.restartPython()
+
+# COMMAND ----------
+
+# DBTITLE 1,Cell 11
+# Configurar MLflow para Unity Catalog
+mlflow.set_registry_uri("databricks-uc")
+# Experimento precisa ser caminho absoluto no workspace
+experiment_path = f"/Users/{spark.sql('SELECT current_user()').collect()[0][0]}/match_predictor"
+mlflow.set_experiment(experiment_path)
 
 # ── XGBoost
 try:
@@ -221,7 +243,7 @@ try:
         y_prob_xgb  = xgb.predict_proba(X)
         acc_xgb     = accuracy_score(y, y_pred_xgb)
 
-        importances = dict(zip(FEATURE_COLS, xgb.feature_importances_))
+        importances = dict(zip(FEATURE_COLS, xgb.feature_importances_.tolist()))
         print(f"\n📊 XGBoost (treino completo):")
         print(f"  Accuracy (train): {acc_xgb:.4f}")
         print(f"  LOTO mean acc:    {loto_df['accuracy'].mean():.4f}")
@@ -287,27 +309,41 @@ except ImportError:
     print("LightGBM não disponível.")
 
 # COMMAND ----------
+
 # MAGIC %md ## 5. Registrar o melhor modelo
 
 # COMMAND ----------
-best_run_id = xgb_run_id or lgb_run_id
-model_uri   = f"runs:/{best_run_id}/model"
 
-result = mlflow.register_model(model_uri, MODEL_NAME)
-client = mlflow.tracking.MlflowClient()
-client.transition_model_version_stage(
-    name=MODEL_NAME, version=result.version,
-    stage="Production", archive_existing_versions=True,
-)
-print(f"✅ '{MODEL_NAME}' v{result.version} → Production")
-print(f"   Classes: 0=away win | 1=draw | 2=home win")
-print(f"   Features: {FEATURE_COLS}")
+# DBTITLE 1,Cell 13
+best_run_id = xgb_run_id or lgb_run_id
+
+if best_run_id is None:
+    print("⚠️  Nenhum modelo foi treinado (XGBoost e LightGBM não disponíveis).")
+    print("   Instale com: %pip install xgboost lightgbm")
+else:
+    model_uri = f"runs:/{best_run_id}/model"
+    print(f"✅ Melhor modelo: {'XGBoost' if best_run_id == xgb_run_id else 'LightGBM'}")
+    print(f"   Run ID: {best_run_id}")
+    print(f"   Model URI: {model_uri}")
+    print(f"\n⚠️  Registro no Unity Catalog requer permissões adicionais.")
+    print(f"   Para registrar manualmente:")
+    print(f"   mlflow.register_model('{model_uri}', '{MODEL_NAME}')")
 
 # COMMAND ----------
+
 # MAGIC %md ## 6. Predição de partidas históricas — calibração
 
 # COMMAND ----------
-loaded = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/Production")
+
+# DBTITLE 1,Cell 16
+# Carregar modelo do run (já que não foi registrado no UC)
+if best_run_id is None:
+    print("⚠️  Nenhum modelo disponível para predição.")
+    raise ValueError("Execute as células anteriores para treinar o modelo.")
+
+model_uri = f"runs:/{best_run_id}/model"
+loaded = mlflow.sklearn.load_model(model_uri)
+print(f"✅ Modelo carregado de: {model_uri}")
 
 probs   = loaded.predict_proba(X)
 df_pred = df[["match_id","_competition_label","home_team_name","away_team_name",
@@ -332,9 +368,11 @@ print(upsets[["_competition_label","home_team_name","away_team_name",
               "home_score","away_score","p_home_win","p_away_win"]].head(10).to_string())
 
 # COMMAND ----------
+
 # MAGIC %md ## 7. Salvar predições na Gold
 
 # COMMAND ----------
+
 pred_spark = spark.createDataFrame(df_pred.drop(columns=["target"]))
 pred_spark = pred_spark.withColumn("_model_name", F.lit(MODEL_NAME)) \
                        .withColumn("_processed_at", F.current_timestamp())
