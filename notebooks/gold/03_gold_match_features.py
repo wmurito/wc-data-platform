@@ -32,7 +32,7 @@
 # MAGIC %md ## 0. Setup
 
 # COMMAND ----------
-CATALOG    = "lakehouse"
+CATALOG    = "worldcup"
 SCHEMA_S   = "silver"
 SCHEMA_G   = "gold"
 SCHEMA_B   = "bronze"
