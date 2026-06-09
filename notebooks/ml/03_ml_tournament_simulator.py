@@ -24,9 +24,11 @@
 # MAGIC   - Sede: EUA / México / Canadá
 
 # COMMAND ----------
+
 # MAGIC %md ## 0. Setup
 
 # COMMAND ----------
+
 CATALOG       = "worldcup"
 SCHEMA_S      = "silver"
 SCHEMA_G      = "gold"
@@ -41,9 +43,11 @@ except Exception:
     SCHEMA_G = "wc_gold"
 
 # COMMAND ----------
+
 # MAGIC %md ## 1. Carregar ELO e estilo de jogo das seleções
 
 # COMMAND ----------
+
 import pandas as pd
 import numpy as np
 import mlflow
@@ -51,48 +55,63 @@ import mlflow.sklearn
 from pyspark.sql import functions as F
 from collections import defaultdict
 
-# ELO atual de cada seleção
-elo_df = spark.table(f"{CATALOG}.{SCHEMA_S}.elo_current_snapshot") \
+# ELO atual de cada seleção - obter ELO mais recente por time
+elo_home = spark.table("lakehouse.silver.elo_ratings") \
+    .select(F.col("home_team").alias("team_name"), "elo_home_after", "match_date") \
+    .withColumnRenamed("elo_home_after", "elo_rating")
+    
+elo_away = spark.table("lakehouse.silver.elo_ratings") \
+    .select(F.col("away_team").alias("team_name"), "elo_away_after", "match_date") \
+    .withColumnRenamed("elo_away_after", "elo_rating")
+
+elo_df = elo_home.union(elo_away) \
+    .orderBy(F.col("match_date").desc()) \
+    .dropDuplicates(["team_name"]) \
     .toPandas().set_index("team_name")["elo_rating"].to_dict()
 
 # Estilo de jogo (médias de todos os torneios)
-style_df = spark.table(f"{CATALOG}.{SCHEMA_G}.team_style_overall") \
+style_df = spark.table("lakehouse.gold.team_style_overall") \
     .toPandas().set_index("team_name")
 
 print(f"Times com ELO: {len(elo_df)}")
 print(f"Times com style: {len(style_df)}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 2. Definição dos grupos da Copa 2026
 # MAGIC
 # MAGIC Grupos provisórios baseados nos rankings FIFA e confirmações até a data.
 # MAGIC Atualizar após o sorteio oficial.
 
 # COMMAND ----------
+
 # 48 times em 12 grupos de 4
 # Fonte: estimativa baseada no ranking FIFA e qualificações
 WC_2026_GROUPS = {
-    "A": ["USA",         "Mexico",       "Canada",        "Honduras"],
-    "B": ["Brazil",      "Ecuador",      "Uruguay",       "Bolivia"],
-    "C": ["Argentina",   "Chile",        "Colombia",      "Peru"],
-    "D": ["France",      "Belgium",      "Netherlands",   "Austria"],
-    "E": ["England",     "Portugal",     "Croatia",       "Poland"],
-    "F": ["Spain",       "Germany",      "Switzerland",   "Serbia"],
-    "G": ["Morocco",     "Senegal",      "Ivory Coast",   "Algeria"],
-    "H": ["Japan",       "South Korea",  "Saudi Arabia",  "Australia"],
-    "I": ["Italy",       "Denmark",      "Czech Republic","Romania"],
-    "J": ["Nigeria",     "Cameroon",     "Egypt",         "Ghana"],
-    "K": ["Iran",        "Qatar",        "Iraq",          "Jordan"],
-    "L": ["Argentina",   "Paraguay",     "Venezuela",     "Panama"],
+    "A": ["Mexico",      "South Africa",      "South Korea",      "Czech Republic"],
+    "B": ["Canada",      "Bosnia and Herzegovina", "Qatar",     "Switzerland"],
+    "C": ["Brazil",      "Morocco",           "Haiti",            "Scotland"],
+    "D": ["United States","Paraguay",         "Australia",        "Turkey"],
+    "E": ["Germany",     "Curacao",           "Ivory Coast",      "Ecuador"],
+    "F": ["Netherlands", "Japan",             "Sweden",           "Tunisia"],
+    "G": ["Belgium",     "Egypt",             "Iran",             "New Zealand"],
+    "H": ["Spain",       "Cape Verde",        "Saudi Arabia",     "Uruguay"],
+    "I": ["France",      "Senegal",           "Iraq",             "Norway"],
+    "J": ["Argentina",   "Algeria",           "Austria",          "Jordan"],
+    "K": ["Portugal",    "DR Congo",          "Uzbekistan",       "Colombia"],
+    "L": ["England",     "Croatia",           "Ghana",            "Panama"],
 }
 
 # Normalizar nomes para casar com o ELO
 NAME_MAP = {
-    "USA":          "United States",
-    "South Korea":  "Korea Republic",
-    "Ivory Coast":  "Côte d'Ivoire",
+    "United States": "United States",
+    "South Korea": "Korea Republic",
+    "Ivory Coast": "Côte d'Ivoire",
     "Czech Republic": "Czechia",
     "Saudi Arabia": "Saudi Arabia",
+    "DR Congo": "Congo DR",
+    "Cape Verde": "Cape Verde Islands",
+    "Bosnia and Herzegovina": "Bosnia-Herzegovina",
 }
 
 ALL_TEAMS = [t for grp in WC_2026_GROUPS.values() for t in grp]
@@ -118,9 +137,11 @@ def get_style(team: str, field: str, default: float) -> float:
     return default
 
 # COMMAND ----------
+
 # MAGIC %md ## 3. Funções de predição e simulação
 
 # COMMAND ----------
+
 # Carregar modelo de produção
 try:
     predictor = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/Production")
@@ -221,9 +242,11 @@ def simulate_match(home: str, away: str, stage: int = 1,
         return away, home
 
 # COMMAND ----------
+
 # MAGIC %md ## 4. Simulação da fase de grupos
 
 # COMMAND ----------
+
 def simulate_groups() -> dict:
     """
     Simula todos os grupos e retorna os classificados.
@@ -316,9 +339,11 @@ def simulate_knockout(teams: list, stage: int) -> str:
     return current[0]
 
 # COMMAND ----------
+
 # MAGIC %md ## 5. Monte Carlo — N_SIMULATIONS simulações
 
 # COMMAND ----------
+
 # Contadores por fase
 phase_counts = {
     team: {
@@ -407,9 +432,11 @@ for sim in range(N_SIMULATIONS):
 print(f"✅ {N_SIMULATIONS:,} simulações concluídas!")
 
 # COMMAND ----------
+
 # MAGIC %md ## 6. Converter para probabilidades e salvar
 
 # COMMAND ----------
+
 results = []
 for team, counts in phase_counts.items():
     results.append({
@@ -447,9 +474,11 @@ with mlflow.start_run(run_name=f"monte_carlo_{N_SIMULATIONS}"):
     mlflow.log_dict(results_df.to_dict(orient="records"), "simulation_results.json")
 
 # COMMAND ----------
+
 # MAGIC %md ## 7. Salvar na Gold Delta Table
 
 # COMMAND ----------
+
 sim_spark = spark.createDataFrame(results_df) \
     .withColumn("_processed_at", F.current_timestamp()) \
     .withColumn("_model_used", F.lit(MODEL_NAME if USE_MODEL else "ELO_pure"))
@@ -463,9 +492,11 @@ sim_spark.write \
 print(f"\n✅ worldcup.gold.simulation_results: {sim_spark.count()} times")
 
 # COMMAND ----------
+
 # MAGIC %md ## 8. Análises finais
 
 # COMMAND ----------
+
 sims = spark.table(f"{CATALOG}.gold.simulation_results")
 
 print("🌎 Top 20 favoritos ao título:")
