@@ -1,40 +1,64 @@
-# WorldCup Data Platform — Databricks Asset Bundle
-# =====================================================
-# ATENÇÃO: Este bundle é para referência e execução futura
-# em workspace pago. Community Edition não suporta Jobs API.
+# WorldCup Data Platform — Databricks Asset Bundle (DAB)
+# =========================================================
+# Estrutura de execução:
+#   Fase 01 · Bronze   → notebooks/bronze/  (01 → 06)
+#   Fase 02 · Silver   → notebooks/silver/  (01 → 06)
+#   Fase 03 · Gold     → notebooks/gold/    (01 → 04 + v2)
+#   Fase 04 · ML       → notebooks/ml/      (01 → 03)
+#   Fase 05 · Serving  → notebooks/serving/ (01 → 02)
 #
 # Deploy: databricks bundle deploy --target dev
-# Run:    databricks bundle run 01_streaming_ingest
-# =====================================================
+# Run job: databricks bundle run wc_bronze_pipeline
+# Run all: databricks bundle run wc_full_pipeline
+# =========================================================
 
 bundle:
   name: wc-data-platform-2026
 
 variables:
   catalog:
-    default: worldcup
-    description: Unity Catalog catalog name
+    default: lakehouse
+    description: "Unity Catalog catalog name (fallback: hive_metastore)"
   env:
     default: dev
-    description: Deployment environment
+    description: Deployment environment (dev | prod)
+  cluster_id:
+    default: ""
+    description: "Existing cluster ID (deixe vazio para criar cluster novo por job)"
+  node_type:
+    default: "Standard_DS3_v2"
+    description: "Tipo de nó do cluster (Azure). Trocar conforme cloud."
+  spark_version:
+    default: "15.4.x-scala2.12"
+    description: "Databricks Runtime version"
 
 workspace:
   host: ${var.DATABRICKS_HOST}
   # Autenticação via env var: DATABRICKS_TOKEN
 
-artifacts:
-  notebooks:
-    type: notebook
-    source_code_path: ../notebooks
+# Notebooks são o código-fonte principal — sem build step necessário
+include:
+  - resources/02_bronze_job.yml
+  - resources/03_silver_job.yml
+  - resources/04_gold_job.yml
+  - resources/05_ml_job.yml
+  - resources/06_serving_job.yml
+  - resources/07_full_pipeline_job.yml
 
 targets:
   dev:
     mode: development
     default: true
     variables:
-      catalog: worldcup_dev
+      catalog: lakehouse
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/dev
 
   prod:
     mode: production
     variables:
-      catalog: worldcup
+      catalog: lakehouse
+    workspace:
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/prod
+    run_as:
+      service_principal_name: ${var.SP_CLIENT_ID}
