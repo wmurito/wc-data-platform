@@ -1,0 +1,344 @@
+# =========================================================
+# PIPELINE MASTER — END-TO-END
+# Orquestra todas as fases em ordem correta:
+#
+#   Bronze (01-06) ──────────────────────────────────────┐
+#   Silver (01-06, depende de Bronze completo) ──────────┤
+#   Gold   (01-04, depende de Silver completo) ──────────┤
+#   ML     (01-03, depende de Gold completo)   ──────────┤
+#   Serving(01-02, depende de ML completo)     ──────────┘
+#
+# Uso: databricks bundle run wc_full_pipeline
+# Tempo estimado: ~45-90 min em cluster pequeno
+# =========================================================
+
+resources:
+  jobs:
+    wc_full_pipeline:
+      name: "WC 2026 · FULL · Pipeline End-to-End"
+      description: >
+        Executa o pipeline completo da plataforma WorldCup 2026:
+        Bronze → Silver → Gold → ML → Serving.
+        Cada fase só inicia após a conclusão bem-sucedida da anterior.
+
+      tags:
+        pipeline: full
+        project: wc-data-platform-2026
+
+      email_notifications:
+        on_failure:
+          - ${var.ALERT_EMAIL}
+        on_success:
+          - ${var.ALERT_EMAIL}
+        no_alert_for_skipped_runs: false
+
+      # Timeout total: 4 horas
+      timeout_seconds: 14400
+
+      job_clusters:
+        - job_cluster_key: main_cluster
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type}
+            num_workers: 4
+            spark_conf:
+              spark.databricks.delta.preview.enabled: "true"
+              spark.sql.extensions: "io.delta.sql.DeltaSparkSessionExtension"
+              spark.sql.catalog.spark_catalog: "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+              spark.sql.shuffle.partitions: "200"
+            custom_tags:
+              pipeline: full
+              project: wc-data-platform-2026
+
+      tasks:
+
+        # ╔══════════════════════════════════════════════╗
+        # ║               FASE 02 · BRONZE               ║
+        # ╚══════════════════════════════════════════════╝
+
+        - task_key: bronze_01_matches
+          description: "[BRONZE 01/06] StatsBomb Matches → bronze.statsbomb_matches"
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/bronze/01_bronze_statsbomb_matches.py
+            base_parameters:
+              catalog: ${var.catalog}
+          libraries:
+            - pypi:
+                package: "statsbombpy>=1.13.0"
+
+        - task_key: bronze_02_events
+          description: "[BRONZE 02/06] StatsBomb Events → bronze.statsbomb_events"
+          depends_on:
+            - task_key: bronze_01_matches
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/bronze/02_bronze_statsbomb_events.py
+            base_parameters:
+              catalog: ${var.catalog}
+          libraries:
+            - pypi:
+                package: "statsbombpy>=1.13.0"
+
+        - task_key: bronze_03_lineups
+          description: "[BRONZE 03/06] StatsBomb Lineups → bronze.statsbomb_lineups"
+          depends_on:
+            - task_key: bronze_01_matches
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/bronze/03_bronze_statsbomb_lineups.py
+            base_parameters:
+              catalog: ${var.catalog}
+          libraries:
+            - pypi:
+                package: "statsbombpy>=1.13.0"
+
+        - task_key: bronze_04_360
+          description: "[BRONZE 04/06] StatsBomb 360° → bronze.statsbomb_360"
+          depends_on:
+            - task_key: bronze_02_events
+            - task_key: bronze_03_lineups
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/bronze/04_bronze_statsbomb_360.py
+            base_parameters:
+              catalog: ${var.catalog}
+          libraries:
+            - pypi:
+                package: "statsbombpy>=1.13.0"
+
+        - task_key: bronze_05_fbref
+          description: "[BRONZE 05/06] FBref Players → bronze.fbref_player_season"
+          depends_on:
+            - task_key: bronze_01_matches
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/bronze/05_bronze_fbref_players.py
+            base_parameters:
+              catalog: ${var.catalog}
+          libraries:
+            - pypi:
+                package: "soccerdata>=1.8.0"
+
+        - task_key: bronze_06_historical
+          description: "[BRONZE 06/06] Historical Results 1930-2022 → bronze.historical_results"
+          depends_on:
+            - task_key: bronze_01_matches
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/bronze/06_bronze_historical_results.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        # ╔══════════════════════════════════════════════╗
+        # ║               FASE 03 · SILVER               ║
+        # ╚══════════════════════════════════════════════╝
+
+        - task_key: silver_01_match_timeline
+          description: "[SILVER 01/06] Match Timeline → silver.match_timeline"
+          depends_on:
+            - task_key: bronze_02_events
+            - task_key: bronze_03_lineups
+            - task_key: bronze_04_360
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/silver/01_silver_match_timeline.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        - task_key: silver_02_player_stats
+          description: "[SILVER 02/06] Player Stats → silver.player_match_stats"
+          depends_on:
+            - task_key: silver_01_match_timeline
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/silver/02_silver_player_stats.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        - task_key: silver_03_team_performance
+          description: "[SILVER 03/06] Team Performance → silver.team_performance"
+          depends_on:
+            - task_key: silver_02_player_stats
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/silver/03_silver_team_performance.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        - task_key: silver_04_shot_map
+          description: "[SILVER 04/06] Shot Map → silver.shot_map"
+          depends_on:
+            - task_key: silver_01_match_timeline
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/silver/04_silver_shot_map.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        - task_key: silver_05_elo_ratings
+          description: "[SILVER 05/06] ELO Ratings → silver.elo_ratings"
+          depends_on:
+            - task_key: silver_03_team_performance
+            - task_key: bronze_06_historical
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/silver/05_silver_elo_ratings.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        - task_key: silver_06_squad_features
+          description: "[SILVER 06/06] Squad Features → silver.squad_features"
+          depends_on:
+            - task_key: silver_02_player_stats
+            - task_key: bronze_05_fbref
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/silver/06_silver_squad_features.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        # ╔══════════════════════════════════════════════╗
+        # ║                FASE 04 · GOLD                ║
+        # ╚══════════════════════════════════════════════╝
+
+        - task_key: gold_01_top_scorers
+          description: "[GOLD 01/05] Top Scorers → gold.top_scorers"
+          depends_on:
+            - task_key: silver_02_player_stats
+            - task_key: silver_04_shot_map
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/gold/01_gold_top_scorers.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        - task_key: gold_02_team_style
+          description: "[GOLD 02/05] Team Style Index → gold.team_style_index"
+          depends_on:
+            - task_key: silver_03_team_performance
+            - task_key: silver_06_squad_features
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/gold/02_gold_team_style.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        - task_key: gold_03_match_features
+          description: "[GOLD 03/05] Match Features → gold.match_features"
+          depends_on:
+            - task_key: gold_01_top_scorers
+            - task_key: gold_02_team_style
+            - task_key: silver_05_elo_ratings
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/gold/03_gold_match_features.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        - task_key: gold_03b_match_features_v2
+          description: "[GOLD 03b/05] Match Features v2 → gold.match_features_v2"
+          depends_on:
+            - task_key: gold_03_match_features
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/gold/03_gold_match_features_v2.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        - task_key: gold_04_standings
+          description: "[GOLD 04/05] Standings → gold.standings"
+          depends_on:
+            - task_key: gold_02_team_style
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/gold/04_gold_standings.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        # ╔══════════════════════════════════════════════╗
+        # ║                 FASE 05 · ML                 ║
+        # ╚══════════════════════════════════════════════╝
+
+        - task_key: ml_01_xg_model
+          description: "[ML 01/03] xG Model training → MLflow: xg_model"
+          depends_on:
+            - task_key: gold_03_match_features
+            - task_key: gold_03b_match_features_v2
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/ml/01_ml_xg_model.py
+            base_parameters:
+              catalog: ${var.catalog}
+              experiment_name: "/Shared/wc-2026/xg_model"
+          libraries:
+            - pypi:
+                package: "lightgbm>=4.3.0"
+            - pypi:
+                package: "scikit-learn>=1.4.0"
+            - pypi:
+                package: "mlflow>=2.13.0"
+
+        - task_key: ml_02_match_predictor
+          description: "[ML 02/03] Match Predictor training → MLflow: match_predictor"
+          depends_on:
+            - task_key: ml_01_xg_model
+            - task_key: gold_04_standings
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/ml/02_ml_match_predictor.py
+            base_parameters:
+              catalog: ${var.catalog}
+              experiment_name: "/Shared/wc-2026/match_predictor"
+              xg_model_version: "latest"
+          libraries:
+            - pypi:
+                package: "lightgbm>=4.3.0"
+            - pypi:
+                package: "scikit-learn>=1.4.0"
+            - pypi:
+                package: "mlflow>=2.13.0"
+
+        - task_key: ml_03_tournament_simulator
+          description: "[ML 03/03] Tournament Simulator 10k → gold.simulation_results"
+          depends_on:
+            - task_key: ml_02_match_predictor
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/ml/03_ml_tournament_simulator.py
+            base_parameters:
+              catalog: ${var.catalog}
+              n_simulations: "10000"
+              predictor_model_version: "latest"
+          libraries:
+            - pypi:
+                package: "mlflow>=2.13.0"
+            - pypi:
+                package: "numpy>=1.26.0"
+
+        # ╔══════════════════════════════════════════════╗
+        # ║              FASE 06 · SERVING               ║
+        # ╚══════════════════════════════════════════════╝
+
+        - task_key: serving_01_export_csv
+          description: "[SERVING 01/02] Export Gold → CSV no DBFS/export"
+          depends_on:
+            - task_key: ml_03_tournament_simulator
+            - task_key: gold_01_top_scorers
+            - task_key: gold_04_standings
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/serving/01_export_gold_to_csv.py
+            base_parameters:
+              catalog: ${var.catalog}
+              export_path: "/Volumes/lakehouse/wc_platform/files/export"
+
+        - task_key: serving_02_fabric_setup
+          description: "[SERVING 02/02] Microsoft Fabric Lakehouse Integration"
+          depends_on:
+            - task_key: serving_01_export_csv
+          job_cluster_key: main_cluster
+          notebook_task:
+            notebook_path: ../notebooks/serving/02_fabric_lakehouse_setup.py
+            base_parameters:
+              catalog: ${var.catalog}

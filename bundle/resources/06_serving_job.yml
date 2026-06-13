@@ -1,0 +1,61 @@
+# =========================================================
+# FASE 06 · SERVING / EXPORT PIPELINE
+# Gold + ML → Exportação e integração externa
+# Ordem:
+#   01_export_gold_to_csv   → CSV para download/Fabric
+#   02_fabric_lakehouse_setup → Integração Microsoft Fabric Lakehouse
+# =========================================================
+
+resources:
+  jobs:
+    wc_serving_pipeline:
+      name: "WC 2026 · 06 · Serving — Export e Integração"
+      description: >
+        Exporta tabelas Gold para CSV e configura integração com
+        Microsoft Fabric Lakehouse para consumo externo.
+        Pré-requisito: wc_gold_pipeline e wc_ml_pipeline concluídos.
+
+      tags:
+        layer: serving
+        project: wc-data-platform-2026
+
+      email_notifications:
+        on_failure:
+          - ${var.ALERT_EMAIL}
+        no_alert_for_skipped_runs: true
+
+      job_clusters:
+        - job_cluster_key: serving_cluster
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type}
+            num_workers: 1
+            custom_tags:
+              layer: serving
+              project: wc-data-platform-2026
+
+      tasks:
+        # ── Task 1: Export Gold to CSV ────────────────────────────────────────
+        - task_key: serving_01_export_gold_csv
+          description: >
+            Exporta tabelas Gold (standings, top_scorers, match_features,
+            simulation_results) para CSV no DBFS/export para download externo.
+          job_cluster_key: serving_cluster
+          notebook_task:
+            notebook_path: ../notebooks/serving/01_export_gold_to_csv.py
+            base_parameters:
+              catalog: ${var.catalog}
+              export_path: "/Volumes/lakehouse/wc_platform/files/export"
+
+        # ── Task 2: Fabric Lakehouse Setup ────────────────────────────────────
+        - task_key: serving_02_fabric_lakehouse_setup
+          description: >
+            Configura integração com Microsoft Fabric Lakehouse:
+            cria atalhos ou copia tabelas Delta para OneLake.
+          depends_on:
+            - task_key: serving_01_export_gold_csv
+          job_cluster_key: serving_cluster
+          notebook_task:
+            notebook_path: ../notebooks/serving/02_fabric_lakehouse_setup.py
+            base_parameters:
+              catalog: ${var.catalog}

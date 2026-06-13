@@ -1,0 +1,119 @@
+# =========================================================
+# FASE 02 · BRONZE PIPELINE
+# Ordem: matches → events → lineups → 360 → fbref → historical
+# Cada task depende da anterior para garantir ordem e evitar
+# sobrecarga no cluster.
+# =========================================================
+
+resources:
+  jobs:
+    wc_bronze_pipeline:
+      name: "WC 2026 · 02 · Bronze — Ingestão Raw → Delta"
+      description: >
+        Ingere todos os dados brutos (StatsBomb matches, events, lineups, 360°,
+        FBref players, historical results) para tabelas Delta na camada Bronze.
+        Executar após upload dos JSONs para DBFS/Volumes.
+
+      tags:
+        layer: bronze
+        project: wc-data-platform-2026
+
+      email_notifications:
+        on_failure:
+          - ${var.ALERT_EMAIL}
+        no_alert_for_skipped_runs: true
+
+      job_clusters:
+        - job_cluster_key: bronze_cluster
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type}
+            num_workers: 2
+            spark_conf:
+              spark.databricks.delta.preview.enabled: "true"
+              spark.sql.extensions: "io.delta.sql.DeltaSparkSessionExtension"
+              spark.sql.catalog.spark_catalog: "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+            custom_tags:
+              layer: bronze
+              project: wc-data-platform-2026
+
+      tasks:
+        # ── Task 1: Matches (base referencial para todas as outras) ──────────
+        - task_key: bronze_01_statsbomb_matches
+          description: "Ingestão de partidas StatsBomb → worldcup.bronze.statsbomb_matches"
+          job_cluster_key: bronze_cluster
+          notebook_task:
+            notebook_path: ../notebooks/bronze/01_bronze_statsbomb_matches.py
+            base_parameters:
+              catalog: ${var.catalog}
+          libraries:
+            - pypi:
+                package: "statsbombpy>=1.13.0"
+
+        # ── Task 2: Events (depende de matches para integridade referencial) ─
+        - task_key: bronze_02_statsbomb_events
+          description: "Ingestão de eventos StatsBomb → worldcup.bronze.statsbomb_events"
+          depends_on:
+            - task_key: bronze_01_statsbomb_matches
+          job_cluster_key: bronze_cluster
+          notebook_task:
+            notebook_path: ../notebooks/bronze/02_bronze_statsbomb_events.py
+            base_parameters:
+              catalog: ${var.catalog}
+          libraries:
+            - pypi:
+                package: "statsbombpy>=1.13.0"
+
+        # ── Task 3: Lineups (depende de matches) ────────────────────────────
+        - task_key: bronze_03_statsbomb_lineups
+          description: "Ingestão de escalações StatsBomb → worldcup.bronze.statsbomb_lineups"
+          depends_on:
+            - task_key: bronze_01_statsbomb_matches
+          job_cluster_key: bronze_cluster
+          notebook_task:
+            notebook_path: ../notebooks/bronze/03_bronze_statsbomb_lineups.py
+            base_parameters:
+              catalog: ${var.catalog}
+          libraries:
+            - pypi:
+                package: "statsbombpy>=1.13.0"
+
+        # ── Task 4: 360° (depende de events + lineups) ──────────────────────
+        - task_key: bronze_04_statsbomb_360
+          description: "Ingestão de dados 360° StatsBomb → worldcup.bronze.statsbomb_360"
+          depends_on:
+            - task_key: bronze_02_statsbomb_events
+            - task_key: bronze_03_statsbomb_lineups
+          job_cluster_key: bronze_cluster
+          notebook_task:
+            notebook_path: ../notebooks/bronze/04_bronze_statsbomb_360.py
+            base_parameters:
+              catalog: ${var.catalog}
+          libraries:
+            - pypi:
+                package: "statsbombpy>=1.13.0"
+
+        # ── Task 5: FBref players (independente de StatsBomb) ───────────────
+        - task_key: bronze_05_fbref_players
+          description: "Ingestão de stats FBref por temporada → worldcup.bronze.fbref_player_season"
+          depends_on:
+            - task_key: bronze_01_statsbomb_matches
+          job_cluster_key: bronze_cluster
+          notebook_task:
+            notebook_path: ../notebooks/bronze/05_bronze_fbref_players.py
+            base_parameters:
+              catalog: ${var.catalog}
+          libraries:
+            - pypi:
+                package: "soccerdata>=1.8.0"
+
+        # ── Task 6: Historical results (independente) ────────────────────────
+        - task_key: bronze_06_historical_results
+          description: "Ingestão de resultados históricos 1930-2022 → worldcup.bronze.historical_results"
+          depends_on:
+            - task_key: bronze_01_statsbomb_matches
+          job_cluster_key: bronze_cluster
+          notebook_task:
+            notebook_path: ../notebooks/bronze/06_bronze_historical_results.py
+            base_parameters:
+              catalog: ${var.catalog}

@@ -1,0 +1,113 @@
+# =========================================================
+# FASE 05 · ML PIPELINE
+# Gold → Modelos MLflow
+# Ordem:
+#   01_xg_model          → treina modelo xG (chutes → expected goals)
+#   02_match_predictor   → treina preditor de resultado (depende de xg_model)
+#   03_tournament_simulator → Monte Carlo 10k simulações (depende de match_predictor)
+# =========================================================
+
+resources:
+  jobs:
+    wc_ml_pipeline:
+      name: "WC 2026 · 05 · ML — Treinamento e Simulação"
+      description: >
+        Treina modelos de xG e match predictor, registra no MLflow e executa
+        simulação Monte Carlo para Copa 2026.
+        Pré-requisito: wc_gold_pipeline concluído.
+
+      tags:
+        layer: ml
+        project: wc-data-platform-2026
+
+      email_notifications:
+        on_failure:
+          - ${var.ALERT_EMAIL}
+        on_success:
+          - ${var.ALERT_EMAIL}
+        no_alert_for_skipped_runs: true
+
+      job_clusters:
+        - job_cluster_key: ml_cluster
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type}
+            num_workers: 4
+            spark_conf:
+              spark.databricks.delta.preview.enabled: "true"
+              spark.sql.extensions: "io.delta.sql.DeltaSparkSessionExtension"
+              spark.sql.catalog.spark_catalog: "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+            custom_tags:
+              layer: ml
+              project: wc-data-platform-2026
+
+      tasks:
+        # ── Task 1: xG Model ──────────────────────────────────────────────────
+        - task_key: ml_01_xg_model
+          description: >
+            Treina modelo de Expected Goals (xG) com LightGBM/XGBoost.
+            Features: posição do chute, ângulo, pressão, tipo de ação.
+            Registra como 'xg_model' no MLflow Model Registry.
+          job_cluster_key: ml_cluster
+          notebook_task:
+            notebook_path: ../notebooks/ml/01_ml_xg_model.py
+            base_parameters:
+              catalog: ${var.catalog}
+              experiment_name: "/Shared/wc-2026/xg_model"
+          libraries:
+            - pypi:
+                package: "lightgbm>=4.3.0"
+            - pypi:
+                package: "scikit-learn>=1.4.0"
+            - pypi:
+                package: "mlflow>=2.13.0"
+
+        # ── Task 2: Match Predictor ────────────────────────────────────────────
+        - task_key: ml_02_match_predictor
+          description: >
+            Treina preditor de resultado de partida (W/D/L + score).
+            Usa features Gold + xG do modelo anterior.
+            Registra como 'match_predictor' no MLflow Model Registry.
+          depends_on:
+            - task_key: ml_01_xg_model
+          job_cluster_key: ml_cluster
+          notebook_task:
+            notebook_path: ../notebooks/ml/02_ml_match_predictor.py
+            base_parameters:
+              catalog: ${var.catalog}
+              experiment_name: "/Shared/wc-2026/match_predictor"
+              xg_model_version: "latest"
+          libraries:
+            - pypi:
+                package: "lightgbm>=4.3.0"
+            - pypi:
+                package: "scikit-learn>=1.4.0"
+            - pypi:
+                package: "mlflow>=2.13.0"
+
+        # ── Task 3: Tournament Simulator ──────────────────────────────────────
+        - task_key: ml_03_tournament_simulator
+          description: >
+            Simulação Monte Carlo 10.000 iterações do torneio Copa 2026.
+            Calcula probabilidade de cada seleção vencer o torneio.
+            Escreve resultados em gold.simulation_results.
+          depends_on:
+            - task_key: ml_02_match_predictor
+          job_cluster_key: ml_cluster
+          notebook_task:
+            notebook_path: ../notebooks/ml/03_ml_tournament_simulator.py
+            base_parameters:
+              catalog: ${var.catalog}
+              n_simulations: "10000"
+              predictor_model_version: "latest"
+          libraries:
+            - pypi:
+                package: "mlflow>=2.13.0"
+            - pypi:
+                package: "numpy>=1.26.0"
+
+      # Agendar simulação diária às 06:00 UTC (atualiza com novos dados)
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: "UTC"
+        pause_status: PAUSED  # Ativar em prod quando Copa começar

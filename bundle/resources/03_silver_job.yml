@@ -1,0 +1,108 @@
+# =========================================================
+# FASE 03 · SILVER PIPELINE
+# Bronze → Silver: dedup, normalização, enriquecimento, MERGE upsert
+# Ordem:
+#   01_match_timeline  (base)
+#   02_player_stats    → depende de match_timeline
+#   03_team_performance→ depende de player_stats
+#   04_shot_map        → depende de match_timeline
+#   05_elo_ratings     → depende de team_performance + historical
+#   06_squad_features  → depende de player_stats + lineups
+# =========================================================
+
+resources:
+  jobs:
+    wc_silver_pipeline:
+      name: "WC 2026 · 03 · Silver — Normalização e Enriquecimento"
+      description: >
+        Transforma dados Bronze em Silver: deduplicação, normalização,
+        enriquecimento semântico e MERGE upsert em Delta Tables.
+        Pré-requisito: wc_bronze_pipeline concluído.
+
+      tags:
+        layer: silver
+        project: wc-data-platform-2026
+
+      email_notifications:
+        on_failure:
+          - ${var.ALERT_EMAIL}
+        no_alert_for_skipped_runs: true
+
+      job_clusters:
+        - job_cluster_key: silver_cluster
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type}
+            num_workers: 2
+            spark_conf:
+              spark.databricks.delta.preview.enabled: "true"
+              spark.sql.extensions: "io.delta.sql.DeltaSparkSessionExtension"
+              spark.sql.catalog.spark_catalog: "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+            custom_tags:
+              layer: silver
+              project: wc-data-platform-2026
+
+      tasks:
+        # ── Task 1: Match Timeline (base de tudo na Silver) ─────────────────
+        - task_key: silver_01_match_timeline
+          description: "Constrói timeline de eventos por partida → silver.match_timeline"
+          job_cluster_key: silver_cluster
+          notebook_task:
+            notebook_path: ../notebooks/silver/01_silver_match_timeline.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        # ── Task 2: Player Stats (depende de match_timeline) ─────────────────
+        - task_key: silver_02_player_stats
+          description: "Agrega stats de jogador por partida → silver.player_match_stats"
+          depends_on:
+            - task_key: silver_01_match_timeline
+          job_cluster_key: silver_cluster
+          notebook_task:
+            notebook_path: ../notebooks/silver/02_silver_player_stats.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        # ── Task 3: Team Performance (depende de player_stats) ───────────────
+        - task_key: silver_03_team_performance
+          description: "Agrega performance por time/partida → silver.team_performance"
+          depends_on:
+            - task_key: silver_02_player_stats
+          job_cluster_key: silver_cluster
+          notebook_task:
+            notebook_path: ../notebooks/silver/03_silver_team_performance.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        # ── Task 4: Shot Map (depende de match_timeline, paralela com player_stats) ─
+        - task_key: silver_04_shot_map
+          description: "Extrai chutes com xG e coordenadas → silver.shot_map"
+          depends_on:
+            - task_key: silver_01_match_timeline
+          job_cluster_key: silver_cluster
+          notebook_task:
+            notebook_path: ../notebooks/silver/04_silver_shot_map.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        # ── Task 5: ELO Ratings (depende de team_performance + histórico) ────
+        - task_key: silver_05_elo_ratings
+          description: "Calcula ratings ELO por seleção → silver.elo_ratings"
+          depends_on:
+            - task_key: silver_03_team_performance
+          job_cluster_key: silver_cluster
+          notebook_task:
+            notebook_path: ../notebooks/silver/05_silver_elo_ratings.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        # ── Task 6: Squad Features (depende de player_stats) ─────────────────
+        - task_key: silver_06_squad_features
+          description: "Features de elenco por seleção/torneio → silver.squad_features"
+          depends_on:
+            - task_key: silver_02_player_stats
+          job_cluster_key: silver_cluster
+          notebook_task:
+            notebook_path: ../notebooks/silver/06_silver_squad_features.py
+            base_parameters:
+              catalog: ${var.catalog}
