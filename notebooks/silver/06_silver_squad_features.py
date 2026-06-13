@@ -25,10 +25,13 @@
 # MAGIC    top3_value_m, depth_value_ratio
 
 # COMMAND ----------
+
 # MAGIC %md ## 0. Setup
 
 # COMMAND ----------
-DBFS_ENRICH = "dbfs:/FileStore/wc-platform/raw/enrichment"
+
+# Migrado para UC Volume (DBFS público desabilitado)
+DBFS_ENRICH = "/Volumes/worldcup/bronze/raw_files/enrichment"
 CATALOG      = "worldcup"
 SCHEMA_S     = "silver"
 TABLE        = "squad_features"
@@ -43,9 +46,11 @@ except Exception:
     spark.sql(f"CREATE DATABASE IF NOT EXISTS {SCHEMA_S}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 1. Carregar dados brutos
 
 # COMMAND ----------
+
 from pyspark.sql import functions as F
 from pyspark.sql.types import DoubleType, IntegerType
 import math
@@ -76,9 +81,58 @@ except Exception as e:
     market_raw = None
 
 # COMMAND ----------
+
+# DBTITLE 1,📤 Migração de arquivos (executar uma vez)
+# ═══════════════════════════════════════════════════════════════════════════════
+# MIGRAÇÃO DE ARQUIVOS DE ENRICHMENT PARA UC VOLUME
+# ═══════════════════════════════════════════════════════════════════════════════
+# Execute este bloco UMA VEZ após gerar os arquivos localmente com o scraper.
+# Depois que os arquivos estiverem no volume, pode deletar esta célula.
+
+print("📂 Volume destino criado: /Volumes/worldcup/bronze/raw_files/enrichment/\n")
+
+# ── OPÇÃO 1: Upload via UI (RECOMENDADO) ──────────────────────────────────────
+print("🎯 OPÇÃO 1 — Upload via Interface (mais simples):")
+print("1. No menu lateral, clique em 'Catalog'")
+print("2. Navegue até: worldcup → bronze → raw_files → enrichment")
+print("3. Clique em 'Upload' e selecione os 3 arquivos .parquet")
+print("")
+print("Arquivos necessários:")
+print("  • sofifa_squad_ratings.parquet")
+print("  • national_team_form.parquet")
+print("  • squad_market_values.parquet")
+print()
+
+# ── OPÇÃO 2: Upload programático (se arquivos estão em outro local) ───────────
+print("💻 OPÇÃO 2 — Migração via código (se arquivos estão em workspace/S3/outro DBFS):")
+print("Descomente e ajuste os paths abaixo:\n")
+
+# # Exemplo 1: Copiar de outro path DBFS
+# source_path = "/path/para/seus/arquivos/"  # Ajuste aqui
+# files = ["sofifa_squad_ratings.parquet", "national_team_form.parquet", "squad_market_values.parquet"]
+# 
+# for file in files:
+#     try:
+#         dbutils.fs.cp(
+#             f"{source_path}/{file}",
+#             f"/Volumes/worldcup/bronze/raw_files/enrichment/{file}",
+#             recurse=True
+#         )
+#         print(f"✅ {file} copiado")
+#     except Exception as e:
+#         print(f"❌ {file}: {e}")
+
+# # Exemplo 2: Fazer upload de arquivo local via Python (se rodando notebook localmente)
+# # Requer dbutils.fs.put() ou upload manual
+
+print("\n⏸️  Após o upload, execute a célula 5 para verificar o carregamento.")
+
+# COMMAND ----------
+
 # MAGIC %md ## 2. Features de Rating (SoFIFA)
 
 # COMMAND ----------
+
 if sofifa_raw is not None:
 
     # Classificar posição em categoria
@@ -188,9 +242,11 @@ else:
     print("⚠️  Usando ratings padrão — SoFIFA não disponível")
 
 # COMMAND ----------
+
 # MAGIC %md ## 3. Features de Forma Recente
 
 # COMMAND ----------
+
 if form_raw is not None:
 
     # Ordenar por data e pegar últimas 10 por time
@@ -249,9 +305,11 @@ else:
     print("⚠️  Dados de forma não disponíveis")
 
 # COMMAND ----------
+
 # MAGIC %md ## 4. Features de Valor de Mercado
 
 # COMMAND ----------
+
 if market_raw is not None:
 
     market = market_raw \
@@ -278,9 +336,11 @@ else:
     print("⚠️  Dados de mercado não disponíveis")
 
 # COMMAND ----------
+
 # MAGIC %md ## 5. Consolidação — squad_features
 
 # COMMAND ----------
+
 # Base: todos os times que aparecem em qualquer fonte
 all_teams_dfs = [
     df.select("team_name") for df in [squad_ratings, form_agg, market] if df is not None
@@ -288,6 +348,13 @@ all_teams_dfs = [
 
 from functools import reduce
 from pyspark.sql import DataFrame
+
+# Evitar erro se nenhum arquivo foi carregado
+if len(all_teams_dfs) == 0:
+    print("⚠️  ERRO: Nenhum arquivo de enrichment encontrado.")
+    print("   Migre os arquivos Parquet para: /Volumes/worldcup/bronze/raw_files/enrichment/")
+    print("   Arquivos esperados: sofifa_squad_ratings.parquet, national_team_form.parquet, squad_market_values.parquet")
+    raise FileNotFoundError("Dados de enrichment não encontrados. Verifique o caminho do volume.")
 
 all_teams = reduce(
     lambda a, b: a.union(b), all_teams_dfs
@@ -322,9 +389,11 @@ total = squad_features.count()
 print(f"\nSquad features consolidadas: {total} seleções | {len(squad_features.columns)} features")
 
 # COMMAND ----------
+
 # MAGIC %md ## 6. Escrita Delta
 
 # COMMAND ----------
+
 squad_features.write \
     .format("delta") \
     .mode("overwrite") \
@@ -334,9 +403,11 @@ squad_features.write \
 print(f"✅ {FULL_TABLE}: {total} seleções")
 
 # COMMAND ----------
+
 # MAGIC %md ## 7. Validação
 
 # COMMAND ----------
+
 sf = spark.table(FULL_TABLE)
 
 print("🏆 Top 10 seleções por overall médio:")
@@ -359,3 +430,4 @@ print("\n💶 Elencos mais valiosos:")
 sf.select("team_name","squad_value_m","avg_player_value_m",
            "top3_value_m","n_players_over_50m","depth_value_ratio") \
   .orderBy("squad_value_m", ascending=False).show(10, truncate=False)
+

@@ -426,3 +426,7 @@ if len(available) > 1:
     print(f"\n  Correlação com result_home:")
     for i, feat in enumerate(available[:-1]):
         print(f"    {feat:35s}: {corr_matrix[i, result_idx]:.4f}")
+<<<<<<< Updated upstream
+=======
+
+>>>>>>> Stashed changes

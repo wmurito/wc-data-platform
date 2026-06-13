@@ -213,6 +213,102 @@ print(f"Média baseline (prever home win sempre): {loto_df['baseline_home_win'].
 # COMMAND ----------
 
 # DBTITLE 1,Cell 11
+# Re-importar após restart
+import pandas as pd
+import numpy as np
+import mlflow
+import mlflow.sklearn
+import warnings
+warnings.filterwarnings("ignore")
+from pyspark.sql import functions as F
+from sklearn.metrics import accuracy_score, f1_score
+from collections import defaultdict
+
+# Recarregar configurações e dados
+CATALOG     = "lakehouse"
+SCHEMA_G    = "gold"
+TABLE_IN    = f"{CATALOG}.{SCHEMA_G}.match_features"
+EXPERIMENT  = "worldcup/match_predictor"
+MODEL_NAME  = "worldcup-match-predictor"
+
+try:
+    spark.sql(f"USE CATALOG {CATALOG}")
+except Exception:
+    CATALOG  = "hive_metastore"
+    SCHEMA_G = "wc_gold"
+    TABLE_IN = f"{CATALOG}.{SCHEMA_G}.match_features"
+
+mf_raw = spark.table(TABLE_IN)
+mf = mf_raw.toPandas()
+
+FEATURE_COLS = [
+    "elo_diff", "elo_home_win_prob", "elo_home", "elo_away",
+    "xg_diff", "ppda_diff", "possession_diff", "dominance_diff",
+    "home_xg_per_game", "home_xga_per_game", "home_ppda", "home_possession_pct",
+    "home_prog_passes", "home_dominance_score",
+    "away_xg_per_game", "away_xga_per_game", "away_ppda", "away_possession_pct",
+    "away_prog_passes", "away_dominance_score",
+    "home_form_xg", "home_form_xga", "home_form_ppda", "home_form_wins",
+    "away_form_xg", "away_form_xga", "away_form_ppda", "away_form_wins",
+    "form_xg_diff", "form_wins_diff", "stage_ordinal",
+]
+
+TARGET = "result_home"
+
+df = mf[FEATURE_COLS + [TARGET, "_competition_label", "match_id",
+                          "home_team_name","away_team_name",
+                          "home_score","away_score"]].copy()
+df = df.dropna(subset=[TARGET])
+
+for col in FEATURE_COLS:
+    df[col] = pd.to_numeric(df[col], errors="coerce")
+    df[col] = df[col].fillna(df[col].median())
+
+label_map  = {1: 2, 0: 1, -1: 0}
+label_back = {2: 1, 1: 0, 0: -1}
+df["target"] = df[TARGET].map(label_map)
+
+X = df[FEATURE_COLS].values
+y = df["target"].values
+
+tournaments = df["_competition_label"].unique()
+
+loto_results = []
+for test_comp in tournaments:
+    mask_test  = df["_competition_label"] == test_comp
+    mask_train = ~mask_test
+    X_tr, y_tr = X[mask_train], y[mask_train]
+    X_te, y_te = X[mask_test],  y[mask_test]
+    if len(X_te) < 5:
+        continue
+    try:
+        from xgboost import XGBClassifier
+        model = XGBClassifier(
+            n_estimators=150, max_depth=4, learning_rate=0.05, subsample=0.8,
+            use_label_encoder=False, eval_metric="mlogloss", random_state=42, verbosity=0,
+        )
+        model.fit(X_tr, y_tr)
+        y_pred = model.predict(X_te)
+        acc = accuracy_score(y_te, y_pred)
+    except:
+        from sklearn.ensemble import GradientBoostingClassifier
+        model = GradientBoostingClassifier(n_estimators=100, random_state=42)
+        model.fit(X_tr, y_tr)
+        y_pred = model.predict(X_te)
+        acc = accuracy_score(y_te, y_pred)
+    loto_results.append({
+        "test_competition": test_comp,
+        "n_matches": len(y_te),
+        "accuracy": round(acc, 4),
+        "baseline_home_win": round((y_te == 2).mean(), 4),
+    })
+
+loto_df = pd.DataFrame(loto_results)
+
+print(f"Sessão restaurada após restart")
+print(f"Partidas: {len(X):,}, Features: {len(FEATURE_COLS)}, Torneios: {len(tournaments)}")
+print(f"LOTO mean accuracy: {loto_df['accuracy'].mean():.4f}")
+
 # Configurar MLflow para Unity Catalog
 mlflow.set_registry_uri("databricks-uc")
 # Experimento precisa ser caminho absoluto no workspace

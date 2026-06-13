@@ -14,98 +14,145 @@
 # MAGIC 4 torneios combinados — WC 2018 + WC 2022 + Euro 2020 + Euro 2024).
 
 # COMMAND ----------
+
 # MAGIC %md ## 0. Setup
 
 # COMMAND ----------
-CATALOG    = "worldcup"
+
+# DBTITLE 1,Célula 3
+# Detectar automaticamente o catálogo correto (onde a tabela silver existe)
+CATALOG = None
+for cat in ["worldcup", "lakehouse", "hive_metastore"]:
+    try:
+        spark.sql(f"DESCRIBE TABLE {cat}.silver.player_match_stats")
+        CATALOG = cat
+        print(f"✅ Usando catálogo: {CATALOG}")
+        break
+    except Exception:
+        pass
+
+if CATALOG is None:
+    raise RuntimeError(
+        "⚠️ Tabela player_match_stats não encontrada em nenhum catálogo.\n"
+        "Execute primeiro o notebook: 02_silver_player_stats"
+    )
+
 SCHEMA_S   = "silver"
 SCHEMA_G   = "gold"
 TABLE      = "top_scorers"
 FULL_TABLE = f"{CATALOG}.{SCHEMA_G}.{TABLE}"
 
+# Criar schema gold se não existir
 try:
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA_G}")
-except Exception:
-    CATALOG    = "hive_metastore"
-    SCHEMA_S   = "wc_silver"
-    SCHEMA_G   = "wc_gold"
-    FULL_TABLE = f"{CATALOG}.{SCHEMA_G}.{TABLE}"
-    spark.sql(f"CREATE DATABASE IF NOT EXISTS {SCHEMA_G}")
+except Exception as e:
+    print(f"⚠️ Não foi possível criar {CATALOG}.{SCHEMA_G}: {e}")
 
 # COMMAND ----------
+
+# DBTITLE 1,Célula 4
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
-ps = spark.table(f"{CATALOG}.{SCHEMA_S}.player_match_stats")
+# Verificar se a tabela upstream existe antes de ler
+try:
+    ps = spark.table(f"{CATALOG}.{SCHEMA_S}.player_match_stats")
+except Exception as e:
+    if "TABLE_OR_VIEW_NOT_FOUND" in str(e):
+        raise RuntimeError(
+            f"⚠️  Tabela {CATALOG}.{SCHEMA_S}.player_match_stats não encontrada.\n"
+            f"Execute primeiro o notebook: 02_silver_player_stats"
+        ) from e
+    else:
+        raise
 
 # COMMAND ----------
+
 # MAGIC %md ## 1. Artilharia por torneio
 
 # COMMAND ----------
+
+# DBTITLE 1,Célula 6
 # Agregação por jogador + torneio
-scorers_by_comp = ps.groupBy(
-    "player_id", "player_name", "team_name",
-    "_competition_id", "_competition_label", "_season_id",
-    "position_name", "country_name"
-).agg(
-    # Gols e xG
-    F.sum("goals").alias("goals"),
-    F.round(F.sum("xg_total"), 3).alias("xg_total"),
-    F.round(F.sum("xg_total") - F.sum("goals"), 3).alias("goals_minus_xg"),
+try:
+    scorers_by_comp = ps.groupBy(
+        "player_id", "player_name", "team_name",
+        "_competition_id", "_competition_label", "_season_id",
+        "position_name", "country_name"
+    ).agg(
+        # Gols e xG
+        F.sum("goals").alias("goals"),
+        F.round(F.sum("xg_total"), 3).alias("xg_total"),
+        F.round(F.sum("xg_total") - F.sum("goals"), 3).alias("goals_minus_xg"),
 
-    # Assistências e criação
-    F.sum("assists").alias("assists"),
-    F.sum("xa_total").alias("xa_total"),
-    F.sum("key_passes").alias("key_passes"),
+        # Assistências e criação
+        F.sum("assists").alias("assists"),
+        F.sum("xa_total").alias("xa_total"),
+        F.sum("key_passes").alias("key_passes"),
 
-    # Volume de chutes
-    F.sum("shots_total").alias("shots_total"),
-    F.sum("shots_on_target").alias("shots_on_target"),
+        # Volume de chutes
+        F.sum("shots_total").alias("shots_total"),
+        F.sum("shots_on_target").alias("shots_on_target"),
 
-    # Tipos de gol
-    F.sum("shots_head").alias("goals_head"),           # headers (approx)
-    F.sum("penalties_scored").alias("penalties_scored"),
-    F.sum("penalties_taken").alias("penalties_taken"),
+        # Tipos de gol
+        F.sum("shots_head").alias("goals_head"),           # headers (approx)
+        F.sum("penalties_scored").alias("penalties_scored"),
+        F.sum("penalties_taken").alias("penalties_taken"),
 
-    # Minutagem estimada
-    F.sum("last_minute_seen").alias("minutes_approx"),
-    F.countDistinct("match_id").alias("matches_played"),
-).withColumn(
-    "goals_per_90",
-    F.when(F.col("minutes_approx") > 0,
-        F.round(F.col("goals") / F.col("minutes_approx") * 90, 3)
-    ).otherwise(F.lit(None))
-).withColumn(
-    "xg_per_90",
-    F.when(F.col("minutes_approx") > 0,
-        F.round(F.col("xg_total") / F.col("minutes_approx") * 90, 3)
-    ).otherwise(F.lit(None))
-).withColumn(
-    "shot_conversion_pct",
-    F.when(F.col("shots_total") > 0,
-        F.round(F.col("goals") / F.col("shots_total") * 100, 1)
-    ).otherwise(F.lit(None))
-).withColumn(
-    "shots_on_target_pct",
-    F.when(F.col("shots_total") > 0,
-        F.round(F.col("shots_on_target") / F.col("shots_total") * 100, 1)
-    ).otherwise(F.lit(None))
-)
+        # Minutagem estimada
+        F.sum("last_minute_seen").alias("minutes_approx"),
+        F.countDistinct("match_id").alias("matches_played"),
+    ).withColumn(
+        "goals_per_90",
+        F.when(F.col("minutes_approx") > 0,
+            F.round(F.col("goals") / F.col("minutes_approx") * 90, 3)
+        ).otherwise(F.lit(None))
+    ).withColumn(
+        "xg_per_90",
+        F.when(F.col("minutes_approx") > 0,
+            F.round(F.col("xg_total") / F.col("minutes_approx") * 90, 3)
+        ).otherwise(F.lit(None))
+    ).withColumn(
+        "shot_conversion_pct",
+        F.when(F.col("shots_total") > 0,
+            F.round(F.col("goals") / F.col("shots_total") * 100, 1)
+        ).otherwise(F.lit(None))
+    ).withColumn(
+        "shots_on_target_pct",
+        F.when(F.col("shots_total") > 0,
+            F.round(F.col("shots_on_target") / F.col("shots_total") * 100, 1)
+        ).otherwise(F.lit(None))
+    )
 
-# Ranking dentro de cada torneio
-w_comp = Window.partitionBy("_competition_id").orderBy(
-    F.col("goals").desc(), F.col("xg_total").desc()
-)
-scorers_ranked = scorers_by_comp.withColumn(
-    "rank_in_competition", F.rank().over(w_comp)
-)
+    # Ranking dentro de cada torneio
+    w_comp = Window.partitionBy("_competition_id").orderBy(
+        F.col("goals").desc(), F.col("xg_total").desc()
+    )
+    scorers_ranked = scorers_by_comp.withColumn(
+        "rank_in_competition", F.rank().over(w_comp)
+    )
 
-print(f"Artilheiros por torneio: {scorers_ranked.count():,}")
+    print(f"Artilheiros por torneio: {scorers_ranked.count():,}")
+except Exception as e:
+    if "TABLE_OR_VIEW_NOT_FOUND" in str(e):
+        raise RuntimeError(
+            f"⚠️  Tabela worldcup.silver.player_match_stats não encontrada.\n\n"
+            f"Este notebook depende de dados da camada Silver.\n"
+            f"Execute primeiro o notebook: 02_silver_player_stats\n\n"
+            f"Ordem de execução:\n"
+            f"  1. Notebooks Bronze (01-04)\n"
+            f"  2. Notebook Silver: 02_silver_player_stats\n"
+            f"  3. Este notebook (01_gold_top_scorers)"
+        ) from e
+    else:
+        raise
 
 # COMMAND ----------
+
 # MAGIC %md ## 2. Ranking cross-torneio (últimos 4 torneios)
 
 # COMMAND ----------
+
 cross_tournament = ps.groupBy("player_id","player_name","team_name","position_name") \
     .agg(
         F.sum("goals").alias("goals_total"),
@@ -125,9 +172,11 @@ cross_tournament = ps.groupBy("player_id","player_name","team_name","position_na
     )
 
 # COMMAND ----------
+
 # MAGIC %md ## 3. Escrita Gold (overwrite — sempre recalculada completa)
 
 # COMMAND ----------
+
 scorers_final = scorers_ranked.withColumn(
     "_processed_at", F.current_timestamp()
 )
@@ -150,9 +199,11 @@ cross_final.write \
 print(f"✅ top_scorers_cross_tournament: {cross_final.count():,} jogadores")
 
 # COMMAND ----------
+
 # MAGIC %md ## 4. Validação — os números devem bater com a realidade
 
 # COMMAND ----------
+
 ts = spark.table(FULL_TABLE)
 
 for comp_label, expected_goals, expected_top_scorer in [

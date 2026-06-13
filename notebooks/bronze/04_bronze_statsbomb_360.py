@@ -94,45 +94,22 @@ for comp in COMPETITIONS_360:
         .json(path_360)
     )
 
-    # Nível 1: explodir eventos (cada linha = 1 evento com freeze_frame array)
-    events_df = raw.select(
+    # O JSON já vem "explodido" — cada linha = 1 jogador visível em 1 evento
+    # Não há array freeze_frame para explodir, nem campos player/position aninhados
+    frames_df = raw.select(
         F.col("id").alias("event_id"),
         F.col("match_id").cast(LongType()),
-        F.col("freeze_frame"),
-        F.col("visible_area"),
+        # Posição do jogador no campo (array de 2 elementos: [x, y])
+        F.col("location")[0].cast(DoubleType()).alias("loc_x"),
+        F.col("location")[1].cast(DoubleType()).alias("loc_y"),
+        # Flags de relação com o evento (não há player_id/name/position neste formato)
+        F.col("teammate").cast(BooleanType()).alias("is_teammate"),
+        F.col("actor").cast(BooleanType()).alias("is_actor"),
+        F.col("keeper").cast(BooleanType()).alias("is_keeper"),
+        # Metadados
         F.lit(comp["competition_id"]).cast(IntegerType()).alias("_competition_id"),
         F.lit(comp["label"]).alias("_competition_label"),
         F.current_timestamp().alias("_ingested_at"),
-    )
-
-    # Nível 2: explodir freeze_frame — 1 linha por jogador visível por evento
-    frames_df = events_df.select(
-        "event_id",
-        "match_id",
-        "_competition_id",
-        "_competition_label",
-        "_ingested_at",
-        F.explode(F.col("freeze_frame")).alias("frame"),
-    ).select(
-        "event_id",
-        "match_id",
-        "_competition_id",
-        "_competition_label",
-        "_ingested_at",
-        # Posição do jogador no campo
-        F.col("frame.location")[0].cast(DoubleType()).alias("loc_x"),
-        F.col("frame.location")[1].cast(DoubleType()).alias("loc_y"),
-        # Identidade
-        F.col("frame.player.id").cast(IntegerType()).alias("player_id"),
-        F.col("frame.player.name").alias("player_name"),
-        F.col("frame.position.id").cast(IntegerType()).alias("position_id"),
-        F.col("frame.position.name").alias("position_name"),
-        # Relação com o ator do evento
-        F.col("frame.teammate").cast(BooleanType()).alias("is_teammate"),
-        # actor = o jogador que executou o evento
-        F.col("frame.actor").cast(BooleanType()).alias("is_actor"),
-        # keeper = goleiro
-        F.col("frame.keeper").cast(BooleanType()).alias("is_keeper"),
     )
 
     n = frames_df.count()

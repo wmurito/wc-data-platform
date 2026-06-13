@@ -44,6 +44,16 @@ except Exception:
 
 # COMMAND ----------
 
+# DBTITLE 1,Instalar dependências
+# MAGIC %pip install xgboost --quiet
+
+# COMMAND ----------
+
+# DBTITLE 1,Reiniciar Python
+dbutils.library.restartPython()
+
+# COMMAND ----------
+
 # MAGIC %md ## 1. Carregar ELO e estilo de jogo das seleções
 
 # COMMAND ----------
@@ -142,11 +152,35 @@ def get_style(team: str, field: str, default: float) -> float:
 
 # COMMAND ----------
 
-# Carregar modelo de produção
+# DBTITLE 1,Cell 9
+# Carregar modelo do último run bem-sucedido do experimento
 try:
-    predictor = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/Production")
-    USE_MODEL = True
-    print(f"✅ Modelo {MODEL_NAME} carregado")
+    # Configurar MLflow para Unity Catalog ANTES de qualquer operação
+    mlflow.set_registry_uri("databricks-uc")
+    
+    experiment_path = f"/Users/{spark.sql('SELECT current_user()').collect()[0][0]}/match_predictor"
+    mlflow.set_experiment(experiment_path)
+    experiment = mlflow.get_experiment_by_name(experiment_path)
+    
+    if experiment:
+        # Buscar runs com modelo XGBoost
+        runs = mlflow.search_runs(
+            experiment_ids=[experiment.experiment_id],
+            filter_string="params.model_type = 'XGBClassifier'",
+            order_by=["start_time DESC"],
+            max_results=1
+        )
+        
+        if not runs.empty:
+            best_run_id = runs.iloc[0].run_id
+            model_uri = f"runs:/{best_run_id}/model"
+            predictor = mlflow.sklearn.load_model(model_uri)
+            USE_MODEL = True
+            print(f"✅ Modelo carregado do run: {best_run_id}")
+        else:
+            raise Exception("Nenhum run com XGBoost encontrado")
+    else:
+        raise Exception(f"Experimento {experiment_path} não encontrado")
 except Exception as e:
     USE_MODEL = False
     print(f"⚠️  Modelo não disponível ({e}). Usando ELO puro.")
@@ -462,7 +496,8 @@ print(results_df[["team_name","group","elo_rating",
       .head(20).to_string(index=False))
 
 # Salvar no MLflow
-mlflow.set_experiment("worldcup/tournament_simulator")
+current_user = spark.sql('SELECT current_user()').collect()[0][0]
+mlflow.set_experiment(f"/Users/{current_user}/tournament_simulator")
 with mlflow.start_run(run_name=f"monte_carlo_{N_SIMULATIONS}"):
     mlflow.log_param("n_simulations", N_SIMULATIONS)
     mlflow.log_param("n_teams", len(ALL_TEAMS))
@@ -487,9 +522,9 @@ sim_spark.write \
     .format("delta") \
     .mode("overwrite") \
     .option("overwriteSchema","true") \
-    .saveAsTable(f"{CATALOG}.gold.simulation_results")
+    .saveAsTable("lakehouse.gold.simulation_results")
 
-print(f"\n✅ worldcup.gold.simulation_results: {sim_spark.count()} times")
+print(f"\n✅ lakehouse.gold.simulation_results: {sim_spark.count()} times")
 
 # COMMAND ----------
 
@@ -497,7 +532,7 @@ print(f"\n✅ worldcup.gold.simulation_results: {sim_spark.count()} times")
 
 # COMMAND ----------
 
-sims = spark.table(f"{CATALOG}.gold.simulation_results")
+sims = spark.table("lakehouse.gold.simulation_results")
 
 print("🌎 Top 20 favoritos ao título:")
 sims.select(

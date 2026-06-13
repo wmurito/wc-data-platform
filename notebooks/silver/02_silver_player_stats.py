@@ -296,6 +296,27 @@ else:
 
 # COMMAND ----------
 
+# DBTITLE 1,MERGE alternativo (sem overwrite)
+# MERGE seguro (sem lógica de overwrite)
+# Já sabemos que a tabela existe, então fazemos apenas o MERGE
+
+from delta.tables import DeltaTable
+
+print(f"🔄 Executando MERGE em {FULL_TABLE}...")
+
+dt = DeltaTable.forName(spark, FULL_TABLE)
+dt.alias("t").merge(
+    player_stats_final.alias("s"),
+    "t.player_id = s.player_id AND t.match_id = s.match_id"
+).whenMatchedUpdateAll() \
+ .whenNotMatchedInsertAll() \
+ .execute()
+
+print(f"✅ MERGE executado com sucesso!")
+print(f"📊 Total de registros: {spark.table(FULL_TABLE).count():,}")
+
+# COMMAND ----------
+
 # MAGIC %md ## 7. Validação — Top artilheiros e criadores
 
 # COMMAND ----------
